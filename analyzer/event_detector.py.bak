@@ -1,0 +1,366 @@
+"""
+异常事件检测模块
+基于ByteTrack追踪结果推断和生成异常事件
+"""
+import logging
+from typing import Dict, List, Any, Optional
+from collections import defaultdict
+from config import Config
+
+logger = logging.getLogger(__name__)
+
+
+class EventDetector:
+    """异常事件检测器"""
+
+    def __init__(self):
+        """初始化事件检测器"""
+        # 追踪物体状态管理
+        self.active_tracks = {}  # {track_id: track_info}
+        self.completed_tracks = {}  # {track_id: track_info}
+
+        # 事件记录
+        self.events = []
+        self.event_id_counter = 1
+
+        # 类别名称映射
+        self.class_names = Config.CLASS_NAMES
+
+        # 持续事件的状态（用于记录起始和结束帧）
+        self.continuous_events = defaultdict(lambda: {'active': False, 'start_frame': None})
+
+    def process_detections(self, frame_number: int, timestamp: float,
+                          detections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        处理当前帧的检测结果，生成事件
+
+        Args:
+            frame_number: 当前帧号
+            timestamp: 当前时间戳（秒）
+            detections: 检测结果列表，每个包含：
+                - track_id: 追踪ID
+                - class_id: 类别ID
+                - class_name: 类别名称
+                - bbox: 边界框 [x, y, w, h]
+                - confidence: 置信度
+
+        Returns:
+            新生成的事件列表
+        """
+        new_events = []
+
+        # 获取当前帧所有活跃的track_id
+        current_track_ids = set()
+        detection_by_track = {}
+
+        for det in detections:
+            track_id = det.get('track_id')
+            if track_id is None:
+                continue
+
+            current_track_ids.add(track_id)
+            detection_by_track[track_id] = det
+
+            class_name = det.get('class_name', '')
+
+            # 1. 检查是否是新物体（首次出现）
+            if track_id not in self.active_tracks:
+                # 记录新追踪物体
+                self.active_tracks[track_id] = {
+                    'track_id': track_id,
+                    'class_name': class_name,
+                    'class_id': det.get('class_id'),
+                    'first_frame': frame_number,
+                    'first_time': timestamp,
+                    'last_frame': frame_number,
+                    'last_time': timestamp,
+                    'trajectory': [det.get('bbox')],
+                    'first_position': self._get_center(det.get('bbox'))
+                }
+
+                # 生成"形成"事件（仅对粘连物和锭冠）
+                if class_name == '粘连物':
+                    event = self._create_event(
+                        event_type='ADHESION_FORMED',
+                        event_name='电极形成粘连物',
+                        start_frame=frame_number,
+                        end_frame=frame_number,
+                        start_time=timestamp,
+                        end_time=timestamp,
+                        object_id=track_id,
+                        metadata={
+                            'position': self._get_center(det.get('bbox')),
+                            'boundingBox': self._bbox_to_dict(det.get('bbox'))
+                        }
+                    )
+                    new_events.append(event)
+
+            else:
+                # 更新已存在物体的信息
+                self.active_tracks[track_id]['last_frame'] = frame_number
+                self.active_tracks[track_id]['last_time'] = timestamp
+                self.active_tracks[track_id]['trajectory'].append(det.get('bbox'))
+
+            # 2. 对于持续性事件（辉光、边弧、爬弧、熔池未到边）
+            # 不需要在这里处理，而是在物体消失时根据其起始帧和结束帧生成事件
+
+        # 3. 检测消失的物体（生成事件）
+        disappeared_tracks = set(self.active_tracks.keys()) - current_track_ids
+
+        for track_id in disappeared_tracks:
+            track_info = self.active_tracks[track_id]
+            class_name = track_info['class_name']
+
+            # 粘连物脱落
+            if class_name == '粘连物':
+                drop_location = self._determine_drop_location(track_info['trajectory'])
+                event = self._create_event(
+                    event_type='ADHESION_DROPPED',
+                    event_name='电极粘连物脱落',
+                    start_frame=track_info['last_frame'],
+                    end_frame=track_info['last_frame'],
+                    start_time=track_info['last_time'],
+                    end_time=track_info['last_time'],
+                    object_id=track_id,
+                    metadata={
+                        'dropLocation': drop_location,
+                        'finalPosition': self._get_center(track_info['trajectory'][-1])
+                    }
+                )
+                new_events.append(event)
+
+            # 锭冠脱落（需要分析轨迹）
+            elif class_name == '锭冠':
+                if self._is_crown_dropped(track_info['trajectory']):
+                    event = self._create_event(
+                        event_type='CROWN_DROPPED',
+                        event_name='锭冠脱落',
+                        start_frame=track_info['last_frame'],
+                        end_frame=track_info['last_frame'],
+                        start_time=track_info['last_time'],
+                        end_time=track_info['last_time'],
+                        object_id=track_id,
+                        metadata={
+                            'finalPosition': self._get_center(track_info['trajectory'][-1])
+                        }
+                    )
+                    new_events.append(event)
+
+            # 持续性异常事件（辉光、边弧、爬弧、熔池未到边）
+            # 根据物体的起始帧和结束帧生成事件
+            elif class_name in ['辉光', '边弧（侧弧）', '爬弧', '熔池未到边']:
+                event = self._create_event(
+                    event_type=Config.EVENT_TYPE_MAPPING.get(class_name, class_name),
+                    event_name=class_name,
+                    start_frame=track_info['first_frame'],
+                    end_frame=track_info['last_frame'],
+                    start_time=track_info['first_time'],
+                    end_time=track_info['last_time'],
+                    object_id=track_id,
+                    metadata={
+                        'startPosition': track_info.get('first_position', {'x': 0, 'y': 0}),
+                        'endPosition': self._get_center(track_info['trajectory'][-1])
+                    }
+                )
+                new_events.append(event)
+
+            # 移动到已完成追踪
+            self.completed_tracks[track_id] = track_info
+                        start_frame=track_info['last_frame'],
+                        end_frame=track_info['last_frame'],
+                        start_time=track_info['last_time'],
+                        end_time=track_info['last_time'],
+                        object_id=track_id,
+                        metadata={
+                            'finalPosition': self._get_center(track_info['trajectory'][-1])
+                        }
+                    )
+                    new_events.append(event)
+
+            # 移动到已完成追踪
+            self.completed_tracks[track_id] = track_info
+            del self.active_tracks[track_id]
+
+        # 4. 结束消失物体的持续事件
+        for event_key in list(self.continuous_events.keys()):
+            if self.continuous_events[event_key]['active']:
+                # 检查该事件对应的track是否还活跃
+                track_id = int(event_key.split('_')[-1]) if '_' in event_key else None
+                if track_id and track_id not in current_track_ids:
+                    # 生成持续事件记录
+                    event_info = self.continuous_events[event_key]
+                    class_name = event_key.rsplit('_', 1)[0]
+
+                    event = self._create_event(
+                        event_type=Config.EVENT_TYPE_MAPPING.get(class_name, class_name),
+                        event_name=class_name,
+                        start_frame=event_info['start_frame'],
+                        end_frame=event_info.get('end_frame', event_info['start_frame']),
+                        start_time=event_info['start_time'],
+                        end_time=event_info.get('end_time', event_info['start_time']),
+                        object_id=track_id,
+                        metadata={}
+                    )
+                    new_events.append(event)
+
+                    # 重置持续事件状态
+                    self.continuous_events[event_key]['active'] = False
+
+        # 记录所有新事件
+        self.events.extend(new_events)
+
+        return new_events
+
+    def finalize_events(self) -> List[Dict[str, Any]]:
+        """
+        完成事件检测，生成最终的持续事件记录
+
+        Returns:
+            所有事件列表
+        """
+        # 结束所有仍在进行的持续事件
+        for event_key, event_info in self.continuous_events.items():
+            if event_info['active']:
+                class_name = event_key.rsplit('_', 1)[0]
+                track_id = int(event_key.split('_')[-1]) if '_' in event_key else None
+
+                event = self._create_event(
+                    event_type=Config.EVENT_TYPE_MAPPING.get(class_name, class_name),
+                    event_name=class_name,
+                    start_frame=event_info['start_frame'],
+                    end_frame=event_info.get('end_frame', event_info['start_frame']),
+                    start_time=event_info['start_time'],
+                    end_time=event_info.get('end_time', event_info['start_time']),
+                    object_id=track_id,
+                    metadata={}
+                )
+                self.events.append(event)
+
+        return self.events
+
+    def get_tracking_objects(self) -> List[Dict[str, Any]]:
+        """
+        获取所有追踪物体的轨迹信息
+
+        Returns:
+            追踪物体列表
+        """
+        tracking_objects = []
+
+        # 包括已完成和仍活跃的追踪
+        all_tracks = {**self.completed_tracks, **self.active_tracks}
+
+        for track_id, track_info in all_tracks.items():
+            # 只记录粘连物和锭冠
+            if track_info['class_name'] not in ['粘连物', '锭冠']:
+                continue
+
+            trajectory = []
+            for i, bbox in enumerate(track_info['trajectory']):
+                frame_num = track_info['first_frame'] + i
+                time = track_info['first_time'] + i / 30.0  # 假设30fps
+
+                trajectory.append({
+                    'frame': frame_num,
+                    'time': round(time, 2),
+                    'position': self._get_center(bbox),
+                    'boundingBox': self._bbox_to_dict(bbox),
+                    'confidence': 0.9  # 假设置信度
+                })
+
+            tracking_obj = {
+                'objectId': track_id,
+                'category': 'ADHESION' if track_info['class_name'] == '粘连物' else 'CROWN',
+                'firstFrame': track_info['first_frame'],
+                'lastFrame': track_info['last_frame'],
+                'trajectory': trajectory
+            }
+            tracking_objects.append(tracking_obj)
+
+        return tracking_objects
+
+    def _create_event(self, event_type: str, event_name: str,
+                     start_frame: int, end_frame: int,
+                     start_time: float, end_time: float,
+                     object_id: Optional[int] = None,
+                     metadata: Dict[str, Any] = None) -> Dict[str, Any]:
+        """创建事件记录"""
+        event = {
+            'eventType': event_type,
+            'startFrame': start_frame,
+            'endFrame': end_frame,
+            'metadata': metadata or {}
+        }
+
+        if object_id is not None:
+            event['objectId'] = object_id
+
+        self.event_id_counter += 1
+        return event
+
+    def _get_center(self, bbox: List[float]) -> Dict[str, float]:
+        """获取边界框中心点（bbox格式：[x1, y1, x2, y2]）"""
+        if not bbox or len(bbox) < 4:
+            return {'x': 0, 'y': 0}
+        x1, y1, x2, y2 = bbox
+        return {'x': round((x1 + x2) / 2, 1), 'y': round((y1 + y2) / 2, 1)}
+
+    def _bbox_to_dict(self, bbox: List[float]) -> Dict[str, float]:
+        """边界框转换为字典（bbox格式：[x1, y1, x2, y2]）"""
+        if not bbox or len(bbox) < 4:
+            return {'x': 0, 'y': 0, 'w': 0, 'h': 0}
+        x1, y1, x2, y2 = bbox
+        return {
+            'x': round(x1, 1),
+            'y': round(y1, 1),
+            'w': round(x2 - x1, 1),
+            'h': round(y2 - y1, 1)
+        }
+
+    def _determine_drop_location(self, trajectory: List[List[float]]) -> str:
+        """
+        判断粘连物脱落位置（落入熔池或被结晶器捕获）
+
+        Args:
+            trajectory: 轨迹列表（bbox格式：[x1, y1, x2, y2]）
+
+        Returns:
+            'POOL' 或 'CRUCIBLE'
+        """
+        # TODO: 实现真实的位置判断逻辑
+        # 当前简化版本：根据最后位置的y坐标判断
+        if len(trajectory) == 0:
+            return 'POOL'
+
+        last_bbox = trajectory[-1]
+        # bbox格式为[x1, y1, x2, y2]
+        x1, y1, x2, y2 = last_bbox
+        center_y = (y1 + y2) / 2
+
+        # 假设视频高度为1080，熔池在下半部分
+        if center_y > 540:
+            return 'POOL'
+        else:
+            return 'CRUCIBLE'
+
+    def _is_crown_dropped(self, trajectory: List[List[float]]) -> bool:
+        """
+        判断锭冠是否从结晶器边缘脱落进入熔池
+
+        Args:
+            trajectory: 轨迹列表（bbox格式：[x1, y1, x2, y2]）
+
+        Returns:
+            是否脱落
+        """
+        # TODO: 实现真实的判断逻辑
+        # 当前简化版本：如果有足够的轨迹点且y坐标明显下降，判断为脱落
+        if len(trajectory) < 5:
+            return False
+
+        # bbox格式为[x1, y1, x2, y2]，取中心y坐标
+        first_center_y = (trajectory[0][1] + trajectory[0][3]) / 2
+        last_center_y = (trajectory[-1][1] + trajectory[-1][3]) / 2
+
+        # 如果y坐标增加超过100像素，判断为脱落（y轴向下为正）
+        return (last_center_y - first_center_y) > 100
