@@ -2,6 +2,7 @@
 AI处理模块配置文件
 """
 import os
+import torch
 from dotenv import load_dotenv
 
 # 加载环境变量（从ai-processor目录）
@@ -113,7 +114,7 @@ class Config:
     # 存储路径
     STORAGE_BASE_PATH = os.getenv('STORAGE_BASE_PATH', './storage')
     RESULT_VIDEO_PATH = os.getenv('RESULT_VIDEO_PATH', './storage/result_videos')
-
+    PREPROCESSED_VIDEO_PATH = os.getenv('PREPROCESSED_VIDEO_PATH', './storage/preprocessed_videos')
     # RabbitMQ配置
     RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')
     RABBITMQ_PORT = int(os.getenv('RABBITMQ_PORT', '5672'))
@@ -143,23 +144,56 @@ class Config:
             relative_path: 相对于codes/目录的路径，例如 'storage/videos/xxx.mp4'
             
         Returns:
-            绝对路径
+            绝对路径（规范化后）
         """
         if os.path.isabs(relative_path):
-            return relative_path
-        return os.path.join(cls.CODES_DIR, relative_path)
+            # 如果已经是绝对路径，规范化后返回
+            return os.path.normpath(relative_path)
+        # 相对路径：拼接后规范化（消除 .. 等）
+        return os.path.normpath(os.path.join(cls.CODES_DIR, relative_path))
     
     @classmethod
     def to_relative_path(cls, absolute_path: str) -> str:
         """
         将绝对路径转换为相对于codes/目录的路径
-        
+
         Args:
             absolute_path: 绝对路径
-            
+
         Returns:
             相对于codes/目录的路径
         """
         if not os.path.isabs(absolute_path):
             return absolute_path
         return os.path.relpath(absolute_path, cls.CODES_DIR)
+
+    @staticmethod
+    def auto_select_device(preferred_device: str = '') -> str:
+        """
+        自动选择PyTorch设备，优先级：CUDA > MPS > CPU
+
+        Args:
+            preferred_device: 用户指定的设备（可选）
+                - 如果指定了具体设备（如'cuda', 'mps', 'cpu'），则使用指定设备
+                - 如果为空字符串，则按优先级自动选择
+
+        Returns:
+            设备字符串 ('cuda', 'mps', 或 'cpu')
+        """
+        # 如果用户指定了设备，直接使用
+        if preferred_device:
+            return preferred_device
+
+        # 按优先级自动选择
+        if torch.cuda.is_available():
+            device = 'cuda'
+            device_name = torch.cuda.get_device_name(0)
+            print(f"✓ 使用 CUDA 设备: {device_name}")
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            device = 'mps'
+            print(f"✓ 使用 Apple MPS (Metal Performance Shaders) 设备")
+        else:
+            device = 'cpu'
+            print(f"✓ 使用 CPU 设备")
+
+        return device

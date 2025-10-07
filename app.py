@@ -53,7 +53,8 @@ def init_mq_consumer():
             # 在后台线程中启动消费者
             consumer_thread = threading.Thread(
                 target=mq_consumer.start_consuming,
-                daemon=True
+                daemon=True,
+                name="MQ-Consumer"
             )
             consumer_thread.start()
             
@@ -63,27 +64,39 @@ def init_mq_consumer():
             logger.warning("MQ consumer not available, will only use HTTP API")
 
 
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """
     健康检查接口
-    返回服务状态、模型加载状态、GPU可用性等信息
+    返回服务状态、模型加载状态、加速器可用性等信息
     """
     try:
         # 确保分析器已初始化
         if analyzer is None:
             init_analyzer()
 
-        gpu_available = torch.cuda.is_available()
-        gpu_name = torch.cuda.get_device_name(0) if gpu_available else None
+        # 检测可用的加速器
+        cuda_available = torch.cuda.is_available()
+        mps_available = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+
+        device_info = {
+            'cuda': {
+                'available': cuda_available,
+                'name': torch.cuda.get_device_name(0) if cuda_available else None
+            },
+            'mps': {
+                'available': mps_available,
+                'name': 'Apple Metal Performance Shaders' if mps_available else None
+            }
+        }
 
         return jsonify({
             'status': 'healthy',
             'model_loaded': analyzer is not None,
             'model_version': Config.MODEL_VERSION,
-            'gpu_available': gpu_available,
-            'gpu_name': gpu_name,
-            'device': str(analyzer.device) if analyzer else 'unknown',
+            'device_info': device_info,
+            'current_device': str(analyzer.device) if analyzer else 'unknown',
             'version': '1.0.0'
         }), 200
     except Exception as e:

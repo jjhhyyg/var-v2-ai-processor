@@ -15,16 +15,20 @@ logger = logging.getLogger(__name__)
 class MetricsCalculator:
     """动态参数计算器 - 真实算法实现"""
 
-    def __init__(self, method='adaptive', roi_rect=None):
+    def __init__(self, method='adaptive', roi_rect=None, stability_check=True, min_area_threshold=500):
         """
         初始化计算器
 
         Args:
             method: 熔池区域分割方法，'adaptive'（自适应阈值）或 'hsv'（颜色空间阈值）
             roi_rect: 感兴趣区域 (x, y, width, height)，为None则处理整帧
+            stability_check: 是否启用稳定性检查，当检测失败时用上一帧数据填充
+            min_area_threshold: 最小有效面积阈值（像素），低于此值视为检测失败
         """
         self.method = method
         self.roi_rect = roi_rect
+        self.stability_check = stability_check
+        self.min_area_threshold = min_area_threshold
 
         # 用于存储时间序列数据（用于后续频率分析）
         self.brightness_series = []
@@ -32,7 +36,11 @@ class MetricsCalculator:
         self.perimeter_series = []
         self.timestamps = []
 
-        logger.info(f"MetricsCalculator initialized: method={method}, roi={'set' if roi_rect else 'full frame'}")
+        # 统计检测失败的帧数
+        self.failed_frames = 0
+
+        logger.info(f"MetricsCalculator initialized: method={method}, roi={'set' if roi_rect else 'full frame'}, "
+                   f"stability_check={stability_check}, min_area_threshold={min_area_threshold}")
 
     def extract_pool_properties(self, frame: np.ndarray) -> tuple:
         """
@@ -140,6 +148,23 @@ class MetricsCalculator:
             # 提取真实参数
             area, perimeter, brightness = self.extract_pool_properties(frame)
 
+            # 检查本次检测是否有效
+            is_valid_detection = area > self.min_area_threshold
+
+            # 如果启用了稳定性检查且本次检测无效，则用上一帧的数据填充
+            if self.stability_check and self.area_series and not is_valid_detection:
+                self.failed_frames += 1
+                original_area = area  # 保存原始值用于日志
+                area = self.area_series[-1]
+                perimeter = self.perimeter_series[-1]
+                brightness = self.brightness_series[-1]
+                logger.debug(f"Frame {frame_number}: Detection failed (area={original_area:.1f} < {self.min_area_threshold}), "
+                           f"using previous frame data (area={area:.1f})")
+            elif not is_valid_detection:
+                # 如果不启用稳定性检查或这是第一帧，则记录为0
+                area, perimeter, brightness = 0, 0, 0
+                logger.debug(f"Frame {frame_number}: Detection failed, recording as 0")
+
         # 存储到时间序列（用于后续频率分析）
         self.area_series.append(area)
         self.perimeter_series.append(perimeter)
@@ -149,9 +174,9 @@ class MetricsCalculator:
         return {
             'frameNumber': frame_number,
             'timestamp': round(timestamp, 2),
-            'brightness': round(brightness, 1),  # 返回亮度值而非频率
-            'poolArea': int(max(0, area)),
-            'poolPerimeter': round(max(0, perimeter), 1)
+            'brightness': round(brightness, 1),
+            'poolArea': int(area),
+            'poolPerimeter': round(perimeter, 1)
         }
 
     def calculate_frequency(self, data_series: List[float], fps: float,
@@ -195,7 +220,7 @@ class MetricsCalculator:
             main_idx = np.argmax(power[1:]) + 1
             main_freq = xf[main_idx]
 
-            # 判断长期趋势
+            # 判断长期趋势（与实验代码保持一致）
             trend = "上升" if z[0] > 0 else "下降" if z[0] < 0 else "平稳"
 
             return {
@@ -222,6 +247,9 @@ class MetricsCalculator:
         results = {}
 
         logger.info(f"开始分析计算结果，共 {len(self.timestamps)} 帧")
+        if self.stability_check and self.failed_frames > 0:
+            logger.info(f"稳定性检查：检测到并修正了 {self.failed_frames} 个异常帧 "
+                       f"({self.failed_frames/len(self.timestamps)*100:.1f}%)")
 
         # 分别对亮度、面积和周长序列进行频率和趋势分析
         brightness_result = self.calculate_frequency(self.brightness_series, fps, "闪烁频率")
@@ -256,4 +284,5 @@ class MetricsCalculator:
         self.area_series = []
         self.perimeter_series = []
         self.timestamps = []
+        self.failed_frames = 0
         logger.info("MetricsCalculator reset")

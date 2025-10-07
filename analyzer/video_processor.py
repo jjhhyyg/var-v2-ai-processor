@@ -16,6 +16,7 @@ from .event_detector import EventDetector
 from .metrics_calculator import MetricsCalculator
 from utils.callback import BackendCallback
 from config import Config
+from preprocessor import OptimizedVideoPreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -84,22 +85,31 @@ class VideoAnalyzer:
 
         Args:
             model_path: YOLO模型路径
-            device: 计算设备
+            device: 计算设备（空字符串表示自动选择，优先级：CUDA > MPS > CPU）
         """
-        self.device = device
+        # 自动选择设备（CUDA > MPS > CPU）
+        self.device = Config.auto_select_device(device)
 
         # 初始化各个组件
-        self.yolo_tracker = YOLOTracker(model_path, device)
+        self.yolo_tracker = YOLOTracker(model_path, self.device)
         self.event_detector = EventDetector()
         self.metrics_calculator = MetricsCalculator()
 
-        logger.info("VideoAnalyzer initialized")
+        # 初始化视频预处理器
+        # CUDA和MPS都支持GPU加速，对于OpenCV CUDA，只有CUDA可用
+        use_gpu_opencv = 'cuda' in str(self.device).lower()
+        self.preprocessor = OptimizedVideoPreprocessor(use_gpu=use_gpu_opencv)
+
+        logger.info(f"VideoAnalyzer initialized with device: {self.device}")
 
     def analyze_video_task(self, task_id: int, video_path: str,
                           video_duration: int, timeout_threshold: int,
                           confidence_threshold: float = 0.5,
                           iou_threshold: float = 0.45,
-                          callback_url: Optional[str] = None):
+                          enable_preprocessing: bool = False,
+                          preprocessing_strength: str = 'moderate',
+                          preprocessing_enhance_pool: bool = True,
+                          callback_url: Optional[str] = None) -> tuple[str, str]:
         """
         分析视频任务（主处理函数）
 
@@ -110,20 +120,107 @@ class VideoAnalyzer:
             timeout_threshold: 超时阈值（秒）
             confidence_threshold: 置信度阈值
             iou_threshold: IoU阈值
+            enable_preprocessing: 是否启用视频预处理
+            preprocessing_strength: 预处理强度（mild/moderate/strong）
+            preprocessing_enhance_pool: 是否启用熔池增强
             callback_url: 回调URL（可选，从MQ消息中获取）
+
+        Returns:
+            tuple[str, str]: (任务状态, 实际分析的视频路径)
+                - 任务状态: 'COMPLETED', 'COMPLETED_TIMEOUT', 'FAILED'
+                - 实际分析的视频路径: 如果启用预处理则为预处理后的视频路径，否则为原始视频路径
         """
+
         callback = BackendCallback(task_id, callback_url)
         preprocessing_start = time.time()
+        final_video_path = None  # 记录实际使用的视频路径
 
         try:
-            # ===== 预处理阶段 =====
-            logger.info(f"Task {task_id}: Starting preprocessing")
+            # 初始化数据结构
+            all_metrics = []
+            all_detections = []
+
+            # ===== 视频预处理阶段（可选） =====
+            preprocessed_video_path = video_path
+            if enable_preprocessing:
+                logger.info(f"Task {task_id}: Starting video preprocessing (strength={preprocessing_strength}, enhance_pool={preprocessing_enhance_pool})")
+                callback.notify_preprocessing(f"正在预处理视频（强度：{preprocessing_strength}）...")
+
+                # 创建预处理视频存储目录（使用codes/storage/preprocessed_videos）
+                # 确保使用绝对路径
+                preprocessed_dir = Path(Config.resolve_path(Config.PREPROCESSED_VIDEO_PATH))
+                preprocessed_dir.mkdir(parents=True, exist_ok=True)
+
+                # 生成预处理后的视频文件名（使用原始视频的文件名）
+                video_stem = Path(video_path).stem
+                preprocessed_filename = f"{video_stem}_preprocessed.mp4"
+                preprocessed_video_path = str(preprocessed_dir / preprocessed_filename)
+
+                # 进度回调函数
+                def preprocessing_progress_callback(current_frame, total_frames, elapsed_time):
+                    progress = current_frame / total_frames
+                    callback.update_progress({
+                        'status': 'PREPROCESSING',
+                        'phase': f'预处理视频中（{preprocessing_strength}）',
+                        'progress': round(progress, 4),
+                        'currentFrame': current_frame,
+                        'totalFrames': total_frames,
+                        'preprocessingDuration': int(elapsed_time)  # 预处理已耗时（秒）
+                    })
+
+                # 执行预处理
+                self.preprocessor.process_video(
+                    input_path=Config.resolve_path(video_path),
+                    output_path=preprocessed_video_path,
+                    strength=preprocessing_strength,
+                    enhance_pool=preprocessing_enhance_pool,
+                    progress_callback=preprocessing_progress_callback
+                )
+
+                logger.info(f"Task {task_id}: Preprocessing completed, output: {preprocessed_video_path}")
+
+                # 通知后端更新预处理视频路径
+                try:
+                    import requests
+                    # 转换为相对于codes/目录的路径（如 storage/preprocessed_videos/xxx.mp4）
+                    relative_path = Config.to_relative_path(os.path.abspath(preprocessed_video_path))
+                    # 确保路径以 storage/ 开头（而不是 ../storage/）
+                    if relative_path.startswith('../storage/'):
+                        relative_path = relative_path[3:]  # 移除 '../'
+                    elif relative_path.startswith('storage/'):
+                        pass  # 已经是正确格式
+                    
+                    update_url = f"{Config.BACKEND_BASE_URL}/api/tasks/{task_id}/preprocessed-video"
+                    response = requests.put(
+                        update_url,
+                        json={'preprocessedVideoPath': relative_path},
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        logger.info(f"Task {task_id}: Preprocessed video path updated: {relative_path}")
+                    else:
+                        logger.warning(f"Task {task_id}: Failed to update preprocessed video path: {response.status_code}")
+                except Exception as e:
+                    logger.error(f"Task {task_id}: Failed to notify backend about preprocessed video: {e}")
+
+            # ===== 元数据读取阶段 =====
+            logger.info(f"Task {task_id}: Reading video metadata")
             callback.notify_preprocessing("正在读取视频元数据...")
 
-            # 打开视频文件
-            cap = cv2.VideoCapture(video_path)
+            # 打开视频文件（如果启用预处理，则使用预处理后的视频）
+            # preprocessed_video_path 现在要么是原始的 video_path（相对路径），
+            # 要么是预处理后的绝对路径，统一通过 resolve_path 处理
+            if enable_preprocessing:
+                # 预处理后的路径已经是绝对路径
+                final_video_path = preprocessed_video_path
+            else:
+                # 原始路径需要解析
+                final_video_path = Config.resolve_path(preprocessed_video_path)
+            
+            logger.info(f"Task {task_id}: Opening video file: {final_video_path}")
+            cap = cv2.VideoCapture(final_video_path)
             if not cap.isOpened():
-                raise ValueError(f"Cannot open video file: {video_path}")
+                raise ValueError(f"Cannot open video file: {final_video_path}")
 
             # 获取视频信息
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -141,10 +238,8 @@ class VideoAnalyzer:
 
             analyzing_start = time.time()
             frame_count = 0
-            all_metrics = []
-            all_detections = []  # 保存每一帧的检测结果
 
-            # 重置追踪器、事件检测器和动态参数计算器
+            # 重置组件
             self.yolo_tracker.reset_tracking()
             self.event_detector = EventDetector()
             self.metrics_calculator.reset()
@@ -178,7 +273,7 @@ class VideoAnalyzer:
                 )
                 all_metrics.append(metrics)
 
-                # 4. 定期更新进度
+                # 4. 定期更新进度和保存检查点
                 if frame_count % Config.PROGRESS_UPDATE_INTERVAL == 0:
                     analyzing_elapsed = int(time.time() - analyzing_start)
                     is_timeout = analyzing_elapsed > timeout_threshold
@@ -252,6 +347,9 @@ class VideoAnalyzer:
 
             logger.info(f"Task {task_id}: Result submitted successfully")
             logger.info(f"Task {task_id}: Tracked objects: {len(tracking_objects)}, Metrics: {len(all_metrics)}")
+            
+            # 返回最终状态和实际使用的视频路径
+            return result_status, final_video_path
 
         except Exception as e:
             logger.error(f"Task {task_id}: Failed with error: {e}", exc_info=True)
@@ -264,6 +362,9 @@ class VideoAnalyzer:
                 })
             except Exception as submit_error:
                 logger.error(f"Task {task_id}: Failed to submit error result: {submit_error}")
+            
+            # 返回失败状态（使用原始视频路径或已处理的路径）
+            return "FAILED", final_video_path if final_video_path else Config.resolve_path(video_path)
 
     def get_info(self) -> Dict[str, Any]:
         """
@@ -339,7 +440,7 @@ class VideoAnalyzer:
 
             for codec, codec_name in codecs_to_try:
                 try:
-                    fourcc = cv2.VideoWriter_fourcc(*codec)
+                    fourcc = cv2.VideoWriter_fourcc(*codec)  # type: ignore
                     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
                     if out.isOpened():
                         used_codec = codec_name
@@ -407,8 +508,19 @@ class VideoAnalyzer:
             cap.release()
             out.release()
 
+            # 验证输出文件是否存在且有效
+            if not os.path.exists(output_path):
+                logger.error(f"Task {task_id}: Result video file was not created: {output_path}")
+                raise ValueError(f"结果视频文件未成功创建: {output_path}")
+
+            output_file_size = os.path.getsize(output_path)
+            if output_file_size == 0:
+                logger.error(f"Task {task_id}: Result video file size is 0: {output_path}")
+                raise ValueError(f"结果视频文件创建失败（文件大小为0）")
+
             export_duration = int(time.time() - export_start)
             logger.info(f"Task {task_id}: Export completed in {export_duration}s, output: {output_path}")
+            logger.info(f"Task {task_id}: Output file size: {output_file_size / 1024 / 1024:.2f} MB")
 
             # 生成结果视频时不更新任务状态，避免触发completedAt更新
             # 结果视频生成不属于任务的生命周期

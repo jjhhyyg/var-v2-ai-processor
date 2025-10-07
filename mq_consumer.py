@@ -103,72 +103,93 @@ class RabbitMQConsumer:
             confidence_threshold = Config.DEFAULT_CONFIDENCE_THRESHOLD
             iou_threshold = Config.DEFAULT_IOU_THRESHOLD
 
+            # 获取预处理配置
+            enable_preprocessing = config.get('enablePreprocessing', False)
+            preprocessing_strength = config.get('preprocessingStrength', 'moderate')
+            preprocessing_enhance_pool = config.get('preprocessingEnhancePool', True)
+
             # 定义处理任务的函数
             def process_task():
                 # 获取信号量，限制并发数
                 acquired = self.semaphore.acquire(blocking=True)
-                
+
                 try:
                     # 更新活跃任务计数
                     with self.active_tasks_lock:
                         self.active_tasks += 1
                         logger.info(f"Task {task_id}: Started (Active tasks: {self.active_tasks}/{self.max_concurrent_tasks})")
-                    
+
                     # 为每个任务创建独立的视频分析器实例
                     task_analyzer = VideoAnalyzer(
                         model_path=Config.MODEL_PATH,
                         device=Config.DEVICE
                     )
                     logger.info(f"Task {task_id}: Created independent analyzer instance")
-                    
-                    # 1. 执行视频分析
-                    task_analyzer.analyze_video_task(
+
+                    # 1. 执行视频分析（包含预处理）
+                    # 返回值：(任务状态, 实际分析的视频路径)
+                    analysis_status, analyzed_video_path = task_analyzer.analyze_video_task(
                         task_id, absolute_video_path, video_duration, timeout_threshold,
-                        confidence_threshold, iou_threshold, callback_url
+                        confidence_threshold, iou_threshold,
+                        enable_preprocessing, preprocessing_strength, preprocessing_enhance_pool,
+                        callback_url
                     )
                     
-                    # 2. 生成结果视频
-                    import os
-                    result_video_dir = Config.RESULT_VIDEO_PATH
-                    os.makedirs(result_video_dir, exist_ok=True)
+                    logger.info(f"Task {task_id}: Analysis finished with status: {analysis_status}")
+                    logger.info(f"Task {task_id}: Analyzed video path: {analyzed_video_path}")
                     
-                    # 生成输出文件名
-                    video_filename = os.path.basename(absolute_video_path)
-                    name_without_ext = os.path.splitext(video_filename)[0]
-                    output_filename = f"{task_id}_{name_without_ext}_result.mp4"
-                    output_path = os.path.join(result_video_dir, output_filename)
-                    
-                    logger.info(f"Task {task_id}: Starting result video generation")
-                    success = task_analyzer.export_annotated_video(
-                        task_id, absolute_video_path, output_path,
-                        confidence_threshold, iou_threshold, callback_url
-                    )
-                    
-                    if success:
-                        logger.info(f"Task {task_id}: Result video generated successfully")
+                    # 2. 生成结果视频（仅当分析成功完成时）
+                    # 重要：使用实际分析的视频路径（analyzed_video_path），而不是原始视频路径
+                    # 这样可以确保结果视频基于与AI分析相同的视频生成，保持检测框的准确性
+                    if analysis_status in ['COMPLETED', 'COMPLETED_TIMEOUT']:
+                        import os
+                        result_video_dir = Config.resolve_path(Config.RESULT_VIDEO_PATH)
+                        os.makedirs(result_video_dir, exist_ok=True)
+                        
+                        # 生成输出文件名（基于实际分析的视频）
+                        video_filename = os.path.basename(analyzed_video_path)
+                        name_without_ext = os.path.splitext(video_filename)[0]
+                        output_filename = f"{task_id}_{name_without_ext}_result.mp4"
+                        output_path = os.path.join(result_video_dir, output_filename)
+                        
+                        logger.info(f"Task {task_id}: Starting result video generation")
+                        logger.info(f"Task {task_id}: Using analyzed video: {analyzed_video_path}")
+                        success = task_analyzer.export_annotated_video(
+                            task_id, analyzed_video_path, output_path,
+                            confidence_threshold, iou_threshold, callback_url
+                        )
+                        
+                        if success:
+                            logger.info(f"Task {task_id}: Result video generated successfully")
 
-                        # 计算相对于 codes/ 目录的相对路径
-                        # 数据库存储格式: storage/result_videos/xxx.mp4 (相对于codes/)
-                        abs_output_path = os.path.abspath(output_path)
-                        relative_path = Config.to_relative_path(abs_output_path)
+                            # 计算相对于 codes/ 目录的相对路径
+                            # 数据库存储格式: storage/result_videos/xxx.mp4 (相对于codes/)
+                            abs_output_path = os.path.abspath(output_path)
+                            relative_path = Config.to_relative_path(abs_output_path)
 
-                        # 通知后端更新结果视频路径
-                        try:
-                            import requests
-                            update_url = f"{Config.BACKEND_BASE_URL}/api/tasks/{task_id}/result-video"
-                            response = requests.put(
-                                update_url,
-                                json={'resultVideoPath': relative_path},
-                                timeout=10
-                            )
-                            if response.status_code == 200:
-                                logger.info(f"Task {task_id}: Result video path updated in backend: {relative_path}")
-                            else:
-                                logger.warning(f"Task {task_id}: Failed to update result video path: {response.status_code}")
-                        except Exception as e:
-                            logger.error(f"Task {task_id}: Failed to notify backend about result video: {e}")
+                            # 通知后端更新结果视频路径
+                            try:
+                                import requests
+                                update_url = f"{Config.BACKEND_BASE_URL}/api/tasks/{task_id}/result-video"
+                                response = requests.put(
+                                    update_url,
+                                    json={'resultVideoPath': relative_path},
+                                    timeout=10
+                                )
+                                if response.status_code == 200:
+                                    logger.info(f"Task {task_id}: Result video path updated in backend: {relative_path}")
+                                else:
+                                    logger.warning(f"Task {task_id}: Failed to update result video path: {response.status_code}")
+                            except Exception as e:
+                                logger.error(f"Task {task_id}: Failed to notify backend about result video: {e}")
+                        else:
+                            logger.error(f"Task {task_id}: Result video generation failed")
+                    elif analysis_status == 'PAUSED':
+                        logger.info(f"Task {task_id}: Task was paused, skipping result video generation")
+                    elif analysis_status == 'FAILED':
+                        logger.error(f"Task {task_id}: Task failed during analysis, skipping result video generation")
                     else:
-                        logger.error(f"Task {task_id}: Result video generation failed")
+                        logger.warning(f"Task {task_id}: Unknown analysis status '{analysis_status}', skipping result video generation")
                         
                 finally:
                     # 释放信号量并更新活跃任务计数

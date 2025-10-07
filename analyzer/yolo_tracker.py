@@ -21,14 +21,14 @@ class YOLOTracker:
 
         Args:
             model_path: YOLO模型路径
-            device: 设备类型（'cpu', 'cuda', '0', '1'等），空字符串表示自动选择
+            device: 设备类型（'cpu', 'cuda', 'mps', '0', '1'等），空字符串表示自动选择
+                   优先级：CUDA > MPS > CPU
         """
         self.model_path = model_path
-        self.device = self._select_device(device)
+        self.device = Config.auto_select_device(device)
         self.class_names = Config.CLASS_NAMES
 
         logger.info(f"Loading YOLO model from {model_path}")
-        logger.info(f"Using device: {self.device}")
 
         try:
             # 加载YOLO模型
@@ -38,27 +38,6 @@ class YOLOTracker:
         except Exception as e:
             logger.error(f"Failed to load YOLO model: {e}")
             raise
-
-    def _select_device(self, device: str) -> str:
-        """
-        选择计算设备
-
-        Args:
-            device: 用户指定的设备
-
-        Returns:
-            最终使用的设备
-        """
-        if device:
-            return device
-
-        # 自动选择
-        if torch.cuda.is_available():
-            return 'cuda'
-        elif torch.backends.mps.is_available():
-            return 'mps'
-        else:
-            return 'cpu'
 
     def track_frame(self, frame: np.ndarray, conf: float = 0.4,
                    iou: float = 0.4, persist: bool = True) -> List[Dict[str, Any]]:
