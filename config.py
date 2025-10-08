@@ -5,8 +5,10 @@ import os
 import torch
 from dotenv import load_dotenv
 
-# 加载环境变量（从ai-processor目录）
-load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+# 加载环境变量（从项目根目录的 .env 文件）
+# codes/ai-processor/config.py -> codes/.env
+_root_dir = os.path.join(os.path.dirname(__file__), '..')
+load_dotenv(os.path.join(_root_dir, '.env'))
 
 
 class Config:
@@ -17,8 +19,8 @@ class Config:
     FLASK_PORT = int(os.getenv('AI_PROCESSOR_PORT', 5000))
     DEBUG = os.getenv('AI_PROCESSOR_DEBUG', 'False').lower() == 'true'
 
-    # 后端回调配置
-    BACKEND_BASE_URL = os.getenv('AI_CALLBACK_URL', 'http://localhost:8080')
+    # 后端服务基础URL（不包含 /api 路径）
+    BACKEND_BASE_URL = os.getenv('BACKEND_BASE_URL', 'http://localhost:8080')
 
     # YOLO模型配置
     MODEL_PATH = os.getenv('YOLO_MODEL_PATH', 'weights/best.pt')
@@ -111,29 +113,71 @@ class Config:
     # 是否显示详细输出
     VERBOSE = os.getenv('YOLO_VERBOSE', 'False').lower() == 'true'
 
-    # 存储路径
-    STORAGE_BASE_PATH = os.getenv('STORAGE_BASE_PATH', './storage')
+    # 存储路径配置（相对于 codes/ 目录）
+    STORAGE_BASE_PATH = os.getenv('STORAGE_BASE_PATH', 'storage')
+    STORAGE_VIDEOS_SUBDIR = os.getenv('STORAGE_VIDEOS_SUBDIR', 'videos')
+    STORAGE_RESULT_VIDEOS_SUBDIR = os.getenv('STORAGE_RESULT_VIDEOS_SUBDIR', 'result_videos')
+    STORAGE_PREPROCESSED_VIDEOS_SUBDIR = os.getenv('STORAGE_PREPROCESSED_VIDEOS_SUBDIR', 'preprocessed_videos')
+    
+    # 完整路径（废弃，保留用于向后兼容）
     RESULT_VIDEO_PATH = os.getenv('RESULT_VIDEO_PATH', './storage/result_videos')
     PREPROCESSED_VIDEO_PATH = os.getenv('PREPROCESSED_VIDEO_PATH', './storage/preprocessed_videos')
+    
     # RabbitMQ配置
     RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')
     RABBITMQ_PORT = int(os.getenv('RABBITMQ_PORT', '5672'))
     RABBITMQ_USER = os.getenv('RABBITMQ_USER', 'var_user')
     RABBITMQ_PASSWORD = os.getenv('RABBITMQ_PASSWORD', 'var_password')
-    RABBITMQ_QUEUE = os.getenv('RABBITMQ_QUEUE', 'video_analysis_queue')
+    
+    # 视频分析任务队列名称
+    RABBITMQ_VIDEO_ANALYSIS_QUEUE = os.getenv('RABBITMQ_VIDEO_ANALYSIS_QUEUE', 'video_analysis_queue')
     
     # codes/ 目录的绝对路径 (ai-processor的父目录)
     CODES_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
     @classmethod
     def get_callback_url(cls, task_id, endpoint='progress'):
-        """获取后端回调URL"""
+        """
+        获取后端回调URL
+        
+        Args:
+            task_id: 任务ID
+            endpoint: 端点类型，可选 'progress' 或 'result'
+            
+        Returns:
+            完整的回调URL
+            
+        Example:
+            >>> Config.get_callback_url(123, 'progress')
+            'http://localhost:8080/api/tasks/123/progress'
+        """
         if endpoint == 'progress':
             return f"{cls.BACKEND_BASE_URL}/api/tasks/{task_id}/progress"
         elif endpoint == 'result':
             return f"{cls.BACKEND_BASE_URL}/api/tasks/{task_id}/result"
         else:
             raise ValueError(f"Unknown endpoint: {endpoint}")
+    
+    @classmethod
+    def get_storage_path(cls, subdir: str = '') -> str:
+        """
+        获取存储路径（绝对路径）
+        
+        Args:
+            subdir: 子目录名称，如 'videos', 'result_videos' 等
+            
+        Returns:
+            绝对路径
+            
+        Example:
+            >>> Config.get_storage_path('videos')
+            '/path/to/codes/storage/videos'
+        """
+        if subdir:
+            path = os.path.join(cls.STORAGE_BASE_PATH, subdir)
+        else:
+            path = cls.STORAGE_BASE_PATH
+        return cls.resolve_path(path)
     
     @classmethod
     def resolve_path(cls, relative_path: str) -> str:

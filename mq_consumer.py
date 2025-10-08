@@ -26,7 +26,7 @@ class RabbitMQConsumer:
         self.rabbitmq_port = Config.RABBITMQ_PORT
         self.rabbitmq_user = Config.RABBITMQ_USER
         self.rabbitmq_password = Config.RABBITMQ_PASSWORD
-        self.queue_name = Config.RABBITMQ_QUEUE
+        self.queue_name = Config.RABBITMQ_VIDEO_ANALYSIS_QUEUE
         
         # 并发控制：使用信号量限制最大并发数
         self.max_concurrent_tasks = 3
