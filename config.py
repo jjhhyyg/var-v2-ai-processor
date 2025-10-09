@@ -24,7 +24,8 @@ class Config:
 
     # YOLO模型配置
     MODEL_PATH = os.getenv('YOLO_MODEL_PATH', 'weights/best.pt')
-    MODEL_VERSION = os.getenv('YOLO_MODEL_VERSION', 'yolo11n')
+    # MODEL_VERSION 已弃用,现在从模型检查点文件动态读取
+    # MODEL_VERSION = os.getenv('YOLO_MODEL_VERSION', 'yolo11n')
     DEVICE = os.getenv('YOLO_DEVICE', '')  # 空字符串表示自动选择
 
     # 默认检测配置

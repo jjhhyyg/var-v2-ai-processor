@@ -94,10 +94,13 @@ def health_check():
             }
         }
 
+        # 获取模型信息
+        model_info = analyzer.yolo_tracker.get_model_info() if analyzer else None
+
         return jsonify({
             'status': 'healthy',
             'model_loaded': analyzer is not None,
-            'model_version': Config.MODEL_VERSION,
+            'model_version': model_info['model_version'] if model_info else 'unknown',
             'device_info': device_info,
             'current_device': str(analyzer.device) if analyzer else 'unknown',
             'version': '1.0.0'

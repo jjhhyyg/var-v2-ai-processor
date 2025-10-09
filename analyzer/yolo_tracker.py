@@ -35,9 +35,39 @@ class YOLOTracker:
             self.model = YOLO(model_path)
             self.model.to(self.device)
             logger.info("YOLO model loaded successfully")
+            
+            # 动态获取模型版本
+            self.model_version = self._get_model_version(model_path)
+            logger.info(f"Model version: {self.model_version}")
         except Exception as e:
             logger.error(f"Failed to load YOLO model: {e}")
             raise
+
+    def _get_model_version(self, model_path: str) -> str:
+        """
+        从模型检查点文件中获取模型版本
+        
+        Args:
+            model_path: 模型文件路径
+            
+        Returns:
+            模型版本字符串 (去掉.pt后缀)
+        """
+        try:
+            # PyTorch 2.6+ 需要设置 weights_only=False 来加载包含自定义类的检查点
+            ckpt = torch.load(model_path, map_location='cpu', weights_only=False)
+            if 'train_args' in ckpt and 'model' in ckpt['train_args']:
+                model_version = ckpt['train_args']['model']
+                # 去掉.pt后缀
+                if model_version.endswith('.pt'):
+                    model_version = model_version[:-3]
+                return model_version
+            else:
+                logger.warning(f"Model version not found in checkpoint, using default 'yolo11n'")
+                return 'yolo11n'
+        except Exception as e:
+            logger.warning(f"Failed to read model version from checkpoint: {e}, using default 'yolo11n'")
+            return 'yolo11n'
 
     def track_frame(self, frame: np.ndarray, conf: float = 0.4,
                    iou: float = 0.4, persist: bool = True) -> List[Dict[str, Any]]:
@@ -147,6 +177,7 @@ class YOLOTracker:
         """
         return {
             'model_path': self.model_path,
+            'model_version': self.model_version,
             'device': str(self.device),
             'class_names': self.class_names,
             'num_classes': len(self.class_names)
