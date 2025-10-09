@@ -108,7 +108,7 @@ class Config:
     }
 
     # 进度更新频率（每处理多少帧更新一次）
-    PROGRESS_UPDATE_INTERVAL = int(os.getenv('PROGRESS_UPDATE_INTERVAL', '30'))
+    PROGRESS_UPDATE_INTERVAL = int(os.getenv('PROGRESS_UPDATE_INTERVAL', '1'))
 
     # 是否显示详细输出
     VERBOSE = os.getenv('YOLO_VERBOSE', 'False').lower() == 'true'

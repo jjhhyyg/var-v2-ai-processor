@@ -39,7 +39,7 @@ class BackendCallback:
         Returns:
             是否更新成功
         """
-        url = f"{self.callback_url}/{self.task_id}/progress"
+        url = f"{self.callback_url}/api/tasks/{self.task_id}/progress"
 
         try:
             response = requests.post(
@@ -74,7 +74,7 @@ class BackendCallback:
         Returns:
             是否提交成功
         """
-        url = f"{self.callback_url}/{self.task_id}/result"
+        url = f"{self.callback_url}/api/tasks/{self.task_id}/result"
 
         try:
             response = requests.post(
