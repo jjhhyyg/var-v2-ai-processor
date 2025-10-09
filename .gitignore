@@ -1,0 +1,6 @@
+storage/*
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+demo/
