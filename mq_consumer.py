@@ -163,13 +163,20 @@ class RabbitMQConsumer:
                     # 这样可以确保结果视频基于与AI分析相同的视频生成，保持检测框的准确性
                     if analysis_status in ['COMPLETED', 'COMPLETED_TIMEOUT']:
                         import os
+                        from utils.filename_utils import add_or_update_timestamp, extract_base_name
+                        
                         result_video_dir = Config.resolve_path(Config.RESULT_VIDEO_PATH)
                         os.makedirs(result_video_dir, exist_ok=True)
                         
-                        # 生成输出文件名（基于实际分析的视频）
+                        # 生成输出文件名（提取基础名称，添加_result后缀和时间戳）
                         video_filename = os.path.basename(analyzed_video_path)
-                        name_without_ext = os.path.splitext(video_filename)[0]
-                        output_filename = f"{task_id}_{name_without_ext}_result.mp4"
+                        
+                        # 提取原始基础名称（去掉时间戳和 _preprocessed 后缀）
+                        base_name = extract_base_name(video_filename, remove_suffixes=['_preprocessed'])
+                        
+                        # 生成结果视频文件名：基础名_result，然后添加时间戳
+                        base_output_filename = f"{base_name}_result.mp4"
+                        output_filename = os.path.basename(add_or_update_timestamp(base_output_filename, update_existing=True))
                         output_path = os.path.join(result_video_dir, output_filename)
                         
                         logger.info(f"Task {task_id}: Starting result video generation")

@@ -151,9 +151,15 @@ class VideoAnalyzer:
                 preprocessed_dir = Path(Config.resolve_path(Config.PREPROCESSED_VIDEO_PATH))
                 preprocessed_dir.mkdir(parents=True, exist_ok=True)
 
-                # 生成预处理后的视频文件名（使用原始视频的文件名）
+                # 生成预处理后的视频文件名（提取基础名称，添加后缀，再添加时间戳）
+                from utils.filename_utils import add_or_update_timestamp, extract_base_name
+                
                 video_stem = Path(video_path).stem
-                preprocessed_filename = f"{video_stem}_preprocessed.mp4"
+                # 提取原始基础名称（去掉时间戳）
+                base_name = extract_base_name(video_stem)
+                # 添加 _preprocessed 后缀，然后添加时间戳
+                base_filename = f"{base_name}_preprocessed.mp4"
+                preprocessed_filename = Path(add_or_update_timestamp(base_filename, update_existing=True)).name
                 preprocessed_video_path = str(preprocessed_dir / preprocessed_filename)
 
                 # 进度回调函数
