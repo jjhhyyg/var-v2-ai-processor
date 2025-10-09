@@ -126,6 +126,26 @@ class RabbitMQConsumer:
                     )
                     logger.info(f"Task {task_id}: Created independent analyzer instance")
 
+                    # 获取模型版本并更新到后端
+                    try:
+                        model_version = task_analyzer.yolo_tracker.model_version
+                        logger.info(f"Task {task_id}: Model version: {model_version}")
+                        
+                        # 向后端更新模型版本
+                        import requests
+                        update_url = f"{Config.BACKEND_BASE_URL}/api/tasks/{task_id}/model-version"
+                        response = requests.put(
+                            update_url,
+                            json={'modelVersion': model_version},
+                            timeout=10
+                        )
+                        if response.status_code == 200:
+                            logger.info(f"Task {task_id}: Model version updated in backend: {model_version}")
+                        else:
+                            logger.warning(f"Task {task_id}: Failed to update model version: {response.status_code}")
+                    except Exception as e:
+                        logger.error(f"Task {task_id}: Failed to update model version: {e}")
+
                     # 1. 执行视频分析（包含预处理）
                     # 返回值：(任务状态, 实际分析的视频路径)
                     analysis_status, analyzed_video_path = task_analyzer.analyze_video_task(
