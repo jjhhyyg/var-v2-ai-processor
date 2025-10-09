@@ -79,7 +79,7 @@ curl http://localhost:5000/health
 
 #### 1. 健康检查
 
-```
+```text
 GET /health
 ```
 
@@ -99,7 +99,7 @@ GET /health
 
 #### 2. 视频分析
 
-```
+```text
 POST /api/analyze
 ```
 
@@ -130,7 +130,7 @@ POST /api/analyze
 
 ## 项目结构
 
-```
+```text
 ai-processor/
 ├── analyzer/              # 核心分析模块
 │   ├── __init__.py
