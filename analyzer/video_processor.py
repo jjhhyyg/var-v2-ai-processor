@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 from .yolo_tracker import YOLOTracker
 from .event_detector import EventDetector
 from .metrics_calculator import MetricsCalculator
+from .anomaly_event_generator import AnomalyEventGenerator
 from utils.callback import BackendCallback
 from config import Config
 from preprocessor import OptimizedVideoPreprocessor
@@ -324,6 +325,21 @@ class VideoAnalyzer:
             final_events = self.event_detector.finalize_events()  # 返回空列表
             tracking_objects = self.event_detector.get_tracking_objects()
 
+            # ✨ 生成基于轨迹的异常事件
+            logger.info(f"Task {task_id}: Generating anomaly events from tracking objects")
+            anomaly_generator = AnomalyEventGenerator(fps=fps)
+            
+            # 从视频路径中提取文件名
+            video_filename = os.path.basename(final_video_path if final_video_path else video_path)
+            
+            # 生成异常事件
+            anomaly_events = anomaly_generator.generate_events(
+                tracking_objects=tracking_objects,
+                video_filename=video_filename,
+                total_frames=total_frames
+            )
+            logger.info(f"Task {task_id}: Generated {len(anomaly_events)} anomaly events")
+
             # ✨ 应用追踪轨迹合并算法（如果启用）
             if enable_tracking_merge and len(tracking_objects) > 0:
                 logger.info(f"Task {task_id}: Applying tracking merge algorithm with strategy '{tracking_merge_strategy}'")
@@ -379,7 +395,7 @@ class VideoAnalyzer:
                 'totalDuration': total_duration,
                 'dynamicMetrics': all_metrics,  # 每帧的动态参数（面积、周长、亮度）
                 'globalAnalysis': global_analysis,  # 全局频率分析结果（闪烁频率、趋势等）
-                'anomalyEvents': final_events,  # 暂时为空列表，后续前端可能需要
+                'anomalyEvents': anomaly_events,  # 基于轨迹生成的异常事件
                 'trackingObjects': tracking_objects
             }
 
