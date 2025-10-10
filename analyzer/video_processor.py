@@ -109,6 +109,8 @@ class VideoAnalyzer:
                           enable_preprocessing: bool = False,
                           preprocessing_strength: str = 'moderate',
                           preprocessing_enhance_pool: bool = True,
+                          enable_tracking_merge: bool = True,
+                          tracking_merge_strategy: str = 'auto',
                           callback_url: Optional[str] = None) -> tuple[str, str]:
         """
         分析视频任务（主处理函数）
@@ -321,6 +323,38 @@ class VideoAnalyzer:
             # 获取追踪物体信息（不再生成异常事件）
             final_events = self.event_detector.finalize_events()  # 返回空列表
             tracking_objects = self.event_detector.get_tracking_objects()
+
+            # ✨ 应用追踪轨迹合并算法（如果启用）
+            if enable_tracking_merge and len(tracking_objects) > 0:
+                logger.info(f"Task {task_id}: Applying tracking merge algorithm with strategy '{tracking_merge_strategy}'")
+                try:
+                    from utils.tracking_utils import smart_merge
+                    
+                    # 应用智能合并
+                    if tracking_merge_strategy == 'auto':
+                        unified_objects, merge_report = smart_merge(tracking_objects, auto_scenario=True)
+                    elif tracking_merge_strategy == 'adhesion':
+                        from utils.tracking_utils import merge_for_adhesion
+                        unified_objects, merge_report = merge_for_adhesion(tracking_objects)
+                    elif tracking_merge_strategy == 'ingot_crown':
+                        from utils.tracking_utils import merge_for_ingot_crown
+                        unified_objects, merge_report = merge_for_ingot_crown(tracking_objects)
+                    elif tracking_merge_strategy == 'conservative':
+                        from utils.tracking_utils import merge_conservative
+                        unified_objects, merge_report = merge_conservative(tracking_objects)
+                    elif tracking_merge_strategy == 'aggressive':
+                        from utils.tracking_utils import merge_aggressive
+                        unified_objects, merge_report = merge_aggressive(tracking_objects)
+                    else:
+                        logger.warning(f"Task {task_id}: Unknown merge strategy '{tracking_merge_strategy}', using auto")
+                        unified_objects, merge_report = smart_merge(tracking_objects, auto_scenario=True)
+                    
+                    # 使用合并后的结果
+                    tracking_objects = unified_objects
+                    logger.info(f"Task {task_id}: Merge completed - {merge_report['total_original_objects']} → {merge_report['total_unified_objects']} objects ({merge_report['merge_rate']})")
+                    logger.info(f"Task {task_id}: Merged {merge_report['total_merge_groups']} groups")
+                except Exception as e:
+                    logger.error(f"Task {task_id}: Failed to apply tracking merge: {e}, using original tracking objects")
 
             # 保存检测结果到文件,供生成结果视频时使用
             tracking_results_dir = Path('storage/tracking_results')

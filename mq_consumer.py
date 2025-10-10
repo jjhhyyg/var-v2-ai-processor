@@ -108,6 +108,10 @@ class RabbitMQConsumer:
             preprocessing_strength = config.get('preprocessingStrength', 'moderate')
             preprocessing_enhance_pool = config.get('preprocessingEnhancePool', True)
 
+            # 获取追踪合并配置
+            enable_tracking_merge = config.get('enableTrackingMerge', True)
+            tracking_merge_strategy = config.get('trackingMergeStrategy', 'auto')
+
             # 定义处理任务的函数
             def process_task():
                 # 获取信号量，限制并发数
@@ -152,6 +156,7 @@ class RabbitMQConsumer:
                         task_id, absolute_video_path, video_duration, timeout_threshold,
                         confidence_threshold, iou_threshold,
                         enable_preprocessing, preprocessing_strength, preprocessing_enhance_pool,
+                        enable_tracking_merge, tracking_merge_strategy,
                         callback_url
                     )
                     
