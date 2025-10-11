@@ -16,6 +16,7 @@ from .event_detector import EventDetector
 from .metrics_calculator import MetricsCalculator
 from .anomaly_event_generator import AnomalyEventGenerator
 from utils.callback import BackendCallback
+from utils.video_storage import VideoStorageManager
 from config import Config
 from preprocessor import OptimizedVideoPreprocessor
 
@@ -96,10 +97,11 @@ class VideoAnalyzer:
         self.event_detector = EventDetector()
         self.metrics_calculator = MetricsCalculator()
 
-        # 初始化视频预处理器
-        # CUDA和MPS都支持GPU加速，对于OpenCV CUDA，只有CUDA可用
-        use_gpu_opencv = 'cuda' in str(self.device).lower()
-        self.preprocessor = OptimizedVideoPreprocessor(use_gpu=use_gpu_opencv)
+        # 初始化视频预处理器（仅使用 CPU）
+        self.preprocessor = OptimizedVideoPreprocessor()
+        
+        # 初始化视频存储管理器
+        self.storage_manager = VideoStorageManager()
 
         logger.info(f"VideoAnalyzer initialized with device: {self.device}")
 
@@ -453,33 +455,7 @@ class VideoAnalyzer:
         Returns:
             是否成功导出
         """
-        import sys
-        import uuid
-        
         callback = BackendCallback(task_id, callback_url)
-
-        # 处理Windows下中文路径乱码问题
-        use_temp_output = False
-        temp_output_path = None
-        if sys.platform == 'win32':
-            try:
-                # 检测路径中是否包含非ASCII字符
-                output_path.encode('ascii')
-            except UnicodeEncodeError:
-                # 包含非ASCII字符（如中文），使用临时文件
-                # 在同一目录下创建临时文件（避免跨目录移动和OpenCV写入临时目录的问题）
-                use_temp_output = True
-                output_dir = os.path.dirname(output_path)
-                # 确保目录存在
-                if output_dir and not os.path.exists(output_dir):
-                    os.makedirs(output_dir, exist_ok=True)
-                # 在同一目录下创建临时文件（使用UUID避免冲突）
-                temp_filename = f"temp_{uuid.uuid4().hex}.mp4"
-                temp_output_path = os.path.join(output_dir, temp_filename)
-                logger.info(f"Task {task_id}: Windows环境检测到非ASCII路径，使用临时文件: {temp_output_path}")
-        
-        # 实际写入的路径（可能是临时路径）
-        actual_output_path = temp_output_path if use_temp_output else output_path
 
         try:
             logger.info(f"Task {task_id}: Starting export annotated video")
@@ -504,157 +480,76 @@ class VideoAnalyzer:
             fps = cap.get(cv2.CAP_PROP_FPS)
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-            # 确保输出目录存在
-            final_output_path = actual_output_path if actual_output_path else output_path
-            output_dir = os.path.dirname(final_output_path)
-            if output_dir:
-                os.makedirs(output_dir, exist_ok=True)
-
-            # 尝试使用浏览器兼容的编码器
-            # 优先使用H.264编码（浏览器原生支持），降级到mp4v
-            codecs_to_try = [
-                ('avc1', 'H.264 (AVC)'),  # H.264编码，浏览器友好
-                ('x264', 'x264'),         # x264编码器
-                ('H264', 'H.264'),        # H.264别名
-                ('mp4v', 'MPEG-4')        # 降级方案（可能不被所有浏览器支持）
-            ]
-
-            out = None
-            used_codec = None
-
-            for codec, codec_name in codecs_to_try:
-                try:
-                    fourcc = cv2.VideoWriter_fourcc(*codec)  # type: ignore
-                    out = cv2.VideoWriter(final_output_path, fourcc, fps, (width, height))
-                    if out.isOpened():
-                        used_codec = codec_name
-                        logger.info(f"Task {task_id}: Using {codec_name} codec")
-                        break
-                    else:
-                        out.release()
-                except Exception as e:
-                    logger.debug(f"Task {task_id}: Codec {codec} not available: {e}")
-                    continue
-
-            if not out or not out.isOpened():
-                if use_temp_output and temp_output_path and os.path.exists(temp_output_path):
-                    os.remove(temp_output_path)
-                raise ValueError(f"Cannot create output video with any available codec")
-
-            if used_codec == 'MPEG-4':
-                logger.warning(f"Task {task_id}: Using MPEG-4 codec, video may not be playable in all browsers. Consider installing OpenCV with H.264 support.")
-
-            logger.info(f"Task {task_id}: Exporting video - {total_frames} frames, {fps} fps, {width}x{height}")
-
+            
             # 验证帧数是否匹配
             if len(all_detections) != total_frames:
                 logger.warning(f"Task {task_id}: Frame count mismatch - video has {total_frames} frames, but tracking results have {len(all_detections)} frames")
 
+            logger.info(f"Task {task_id}: Exporting video - {total_frames} frames, {fps} fps, {width}x{height}")
+            
+            # 估算输出文件大小
+            estimate_size_mb = self.storage_manager.estimate_video_size(
+                width, height, total_frames, fps
+            )
+            
+            # 创建视频写入器
+            try:
+                out, actual_output_path, finalize = self.storage_manager.create_video_writer(
+                    output_path, fps, width, height, estimate_size_mb=estimate_size_mb
+                )
+            except Exception as e:
+                cap.release()
+                raise
+
             frame_count = 0
             export_start = time.time()
+            success = False  # 标记是否成功完成
 
-            # 逐帧处理
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
+            try:
+                # 逐帧处理
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
 
-                # 使用保存的检测结果（不再重新运行ByteTrack）
-                if frame_count < len(all_detections):
-                    detections = all_detections[frame_count]
-                else:
-                    logger.warning(f"Task {task_id}: No tracking results for frame {frame_count + 1}")
-                    detections = []
+                    # 使用保存的检测结果（不再重新运行ByteTrack）
+                    if frame_count < len(all_detections):
+                        detections = all_detections[frame_count]
+                    else:
+                        logger.warning(f"Task {task_id}: No tracking results for frame {frame_count + 1}")
+                        detections = []
 
-                frame_count += 1
+                    frame_count += 1
 
-                # 在帧上绘制检测结果
-                annotated_frame = self._draw_detections(frame, detections)
+                    # 在帧上绘制检测结果
+                    annotated_frame = self._draw_detections(frame, detections)
 
-                # 写入视频
-                out.write(annotated_frame)
+                    # 写入视频
+                    out.write(annotated_frame)
 
-                # 定期更新进度
-                if frame_count % Config.PROGRESS_UPDATE_INTERVAL == 0:
-                    progress = frame_count / total_frames
+                    # 定期更新进度
+                    if frame_count % Config.PROGRESS_UPDATE_INTERVAL == 0:
+                        progress = frame_count / total_frames
+                        logger.info(f"Task {task_id}: Export progress {progress:.1%}, {frame_count}/{total_frames} frames")
+                
+                success = True  # 标记成功完成
+                
+            finally:
+                # 释放资源
+                cap.release()
+                
+                # 调用清理函数（会自动处理临时文件的移动或删除）
+                finalize(success=success)
 
-                    # 生成结果视频时不更新任务状态，避免触发completedAt更新
-                    # 结果视频生成不属于任务的生命周期
-                    # callback.update_progress({
-                    #     'status': 'COMPLETED',
-                    #     'phase': '生成结果视频',
-                    #     'progress': round(progress, 4),
-                    #     'currentFrame': frame_count,
-                    #     'totalFrames': total_frames
-                    # })
-
-                    logger.info(f"Task {task_id}: Export progress {progress:.1%}, {frame_count}/{total_frames} frames")
-
-            # 释放资源
-            cap.release()
-            out.release()
-
-            # Windows环境：如果使用了临时文件，现在将其复制为目标文件名
-            if use_temp_output and temp_output_path:
-                try:
-                    # 确保目标目录存在
-                    output_dir = os.path.dirname(output_path)
-                    if output_dir and not os.path.exists(output_dir):
-                        os.makedirs(output_dir, exist_ok=True)
-                    
-                    # 如果目标文件已存在，先删除
-                    if os.path.exists(output_path):
-                        os.remove(output_path)
-                    
-                    # 使用二进制复制（避免编码问题）
-                    # shutil.move在Windows下处理中文路径可能失败，改用copy+remove
-                    with open(temp_output_path, 'rb') as src:
-                        with open(output_path, 'wb') as dst:
-                            # 分块复制，避免大文件内存问题
-                            while True:
-                                chunk = src.read(1024 * 1024)  # 1MB chunks
-                                if not chunk:
-                                    break
-                                dst.write(chunk)
-                    
-                    # 删除临时文件
-                    os.remove(temp_output_path)
-                    logger.info(f"Task {task_id}: 临时文件已重命名为: {output_path}")
-                except Exception as e:
-                    logger.error(f"Task {task_id}: 重命名临时文件失败: {e}")
-                    # 清理临时文件
-                    if os.path.exists(temp_output_path):
-                        try:
-                            os.remove(temp_output_path)
-                        except:
-                            pass
-                    raise ValueError(f"无法保存结果视频到: {output_path}, 错误: {e}")
-
-            # 验证输出文件是否存在且有效
-            if not os.path.exists(output_path):
-                logger.error(f"Task {task_id}: Result video file was not created: {output_path}")
-                raise ValueError(f"结果视频文件未成功创建: {output_path}")
-
-            output_file_size = os.path.getsize(output_path)
-            if output_file_size == 0:
-                logger.error(f"Task {task_id}: Result video file size is 0: {output_path}")
-                raise ValueError(f"结果视频文件创建失败（文件大小为0）")
-
-            export_duration = int(time.time() - export_start)
-            logger.info(f"Task {task_id}: Export completed in {export_duration}s, output: {output_path}")
-            logger.info(f"Task {task_id}: Output file size: {output_file_size / 1024 / 1024:.2f} MB")
-
-            # 生成结果视频时不更新任务状态，避免触发completedAt更新
-            # 结果视频生成不属于任务的生命周期
-            # callback.update_progress({
-            #     'status': 'COMPLETED',
-            #     'phase': '生成结果视频',
-            #     'progress': 1.0,
-            #     'currentFrame': total_frames,
-            #     'totalFrames': total_frames
-            # })
-            # logger.info(f"Task {task_id}: Export progress pushed to 100%")
+            # 验证输出文件
+            try:
+                validation_result = self.storage_manager.validate_video_file(output_path, check_frames=False)
+                export_duration = int(time.time() - export_start)
+                logger.info(f"Task {task_id}: Export completed in {export_duration}s, output: {output_path}")
+                logger.info(f"Task {task_id}: Output file size: {validation_result['size_mb']:.2f}MB")
+            except Exception as e:
+                logger.error(f"Task {task_id}: Output file validation failed: {e}")
+                raise
 
             return True
 
