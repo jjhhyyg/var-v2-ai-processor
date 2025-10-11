@@ -591,7 +591,7 @@ class VideoAnalyzer:
             cap.release()
             out.release()
 
-            # Windows环境：如果使用了临时文件，现在将其重命名为目标文件名
+            # Windows环境：如果使用了临时文件，现在将其复制为目标文件名
             if use_temp_output and temp_output_path:
                 try:
                     # 确保目标目录存在
@@ -603,8 +603,19 @@ class VideoAnalyzer:
                     if os.path.exists(output_path):
                         os.remove(output_path)
                     
-                    # 移动临时文件到目标位置
-                    shutil.move(temp_output_path, output_path)
+                    # 使用二进制复制（避免编码问题）
+                    # shutil.move在Windows下处理中文路径可能失败，改用copy+remove
+                    with open(temp_output_path, 'rb') as src:
+                        with open(output_path, 'wb') as dst:
+                            # 分块复制，避免大文件内存问题
+                            while True:
+                                chunk = src.read(1024 * 1024)  # 1MB chunks
+                                if not chunk:
+                                    break
+                                dst.write(chunk)
+                    
+                    # 删除临时文件
+                    os.remove(temp_output_path)
                     logger.info(f"Task {task_id}: 临时文件已重命名为: {output_path}")
                 except Exception as e:
                     logger.error(f"Task {task_id}: 重命名临时文件失败: {e}")
