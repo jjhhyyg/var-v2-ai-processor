@@ -327,7 +327,7 @@ class VideoAnalyzer:
 
             # ✨ 生成基于轨迹的异常事件
             logger.info(f"Task {task_id}: Generating anomaly events from tracking objects")
-            anomaly_generator = AnomalyEventGenerator(fps=fps)
+            anomaly_generator = AnomalyEventGenerator(fps=fps, video_path=final_video_path)
             
             # 从视频路径中提取文件名
             video_filename = os.path.basename(final_video_path if final_video_path else video_path)

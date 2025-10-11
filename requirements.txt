@@ -1,22 +1,24 @@
 # Flask Web框架
-Flask==3.0.0
-Werkzeug==3.0.1
+Flask==3.1.2
+Werkzeug==3.1.3
 
 # 深度学习和计算机视觉
-torch>=2.0.0
-torchvision>=0.15.0
-ultralytics>=8.0.0
-opencv-python>=4.8.0
-numpy>=1.24.0
+torch>=2.6.0
+torchvision>=0.21.0
+ultralytics>=8.3.156
+opencv-python>=4.10.0
+numpy>=2.0.0
 
 # HTTP请求
-requests>=2.31.0
+requests>=2.32.0
 
 # 消息队列
 pika>=1.3.0
 
 # 环境变量管理
-python-dotenv>=1.0.0
+python-dotenv>=1.1.0
 
 # 日志和工具
-Pillow>=10.0.0
+pillow>=11.0.0
+
+lap >= 0.5.12
