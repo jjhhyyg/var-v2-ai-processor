@@ -453,7 +453,29 @@ class VideoAnalyzer:
         Returns:
             是否成功导出
         """
+        import sys
+        import tempfile
+        import shutil
+        
         callback = BackendCallback(task_id, callback_url)
+
+        # 处理Windows下中文路径乱码问题
+        use_temp_output = False
+        temp_output_path = None
+        if sys.platform == 'win32':
+            try:
+                # 检测路径中是否包含非ASCII字符
+                output_path.encode('ascii')
+            except UnicodeEncodeError:
+                # 包含非ASCII字符（如中文），使用临时文件
+                use_temp_output = True
+                # 创建临时文件
+                temp_fd, temp_output_path = tempfile.mkstemp(suffix='.mp4', prefix='temp_result_')
+                os.close(temp_fd)
+                logger.info(f"Task {task_id}: Windows环境检测到非ASCII路径，使用临时文件: {temp_output_path}")
+        
+        # 实际写入的路径（可能是临时路径）
+        actual_output_path = temp_output_path if use_temp_output else output_path
 
         try:
             logger.info(f"Task {task_id}: Starting export annotated video")
@@ -480,7 +502,10 @@ class VideoAnalyzer:
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
             # 确保输出目录存在
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            final_output_path = actual_output_path if actual_output_path else output_path
+            output_dir = os.path.dirname(final_output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
 
             # 尝试使用浏览器兼容的编码器
             # 优先使用H.264编码（浏览器原生支持），降级到mp4v
@@ -497,7 +522,7 @@ class VideoAnalyzer:
             for codec, codec_name in codecs_to_try:
                 try:
                     fourcc = cv2.VideoWriter_fourcc(*codec)  # type: ignore
-                    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+                    out = cv2.VideoWriter(final_output_path, fourcc, fps, (width, height))
                     if out.isOpened():
                         used_codec = codec_name
                         logger.info(f"Task {task_id}: Using {codec_name} codec")
@@ -509,6 +534,8 @@ class VideoAnalyzer:
                     continue
 
             if not out or not out.isOpened():
+                if use_temp_output and temp_output_path and os.path.exists(temp_output_path):
+                    os.remove(temp_output_path)
                 raise ValueError(f"Cannot create output video with any available codec")
 
             if used_codec == 'MPEG-4':
@@ -563,6 +590,31 @@ class VideoAnalyzer:
             # 释放资源
             cap.release()
             out.release()
+
+            # Windows环境：如果使用了临时文件，现在将其重命名为目标文件名
+            if use_temp_output and temp_output_path:
+                try:
+                    # 确保目标目录存在
+                    output_dir = os.path.dirname(output_path)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir, exist_ok=True)
+                    
+                    # 如果目标文件已存在，先删除
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                    
+                    # 移动临时文件到目标位置
+                    shutil.move(temp_output_path, output_path)
+                    logger.info(f"Task {task_id}: 临时文件已重命名为: {output_path}")
+                except Exception as e:
+                    logger.error(f"Task {task_id}: 重命名临时文件失败: {e}")
+                    # 清理临时文件
+                    if os.path.exists(temp_output_path):
+                        try:
+                            os.remove(temp_output_path)
+                        except:
+                            pass
+                    raise ValueError(f"无法保存结果视频到: {output_path}, 错误: {e}")
 
             # 验证输出文件是否存在且有效
             if not os.path.exists(output_path):

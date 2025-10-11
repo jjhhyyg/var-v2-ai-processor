@@ -57,12 +57,38 @@ class OptimizedVideoPreprocessor:
         :param strength: str, 预处理强度。可选值为 'mild'(轻度), 'moderate'(中度), 'strong'(强度)。
                          不同强度对应不同的去噪和增强参数。
         :param enhance_pool: bool, 是否启用针对熔池的特定增强算法。
-        :param progress_callback: 进度回调函数，接收(当前帧数, 总帧数, 已耗时秒数)
+        :param progress_callback: 进度回调函数,接收(当前帧数, 总帧数, 已耗时秒数)
         """
+        import sys
+        import tempfile
+        import shutil
+        
+        # 处理Windows下中文路径乱码问题
+        # 在Windows下使用临时英文路径，处理完成后再重命名
+        use_temp_output = False
+        temp_output_path = None
+        if sys.platform == 'win32':
+            try:
+                # 检测路径中是否包含非ASCII字符
+                output_path.encode('ascii')
+            except UnicodeEncodeError:
+                # 包含非ASCII字符（如中文），使用临时文件
+                use_temp_output = True
+                # 创建临时文件（自动清理）
+                temp_fd, temp_output_path = tempfile.mkstemp(suffix='.mp4', prefix='temp_preprocessed_')
+                os.close(temp_fd)  # 关闭文件描述符
+                logger.info(f"Windows环境检测到非ASCII路径，使用临时文件: {temp_output_path}")
+        
+        # 实际写入的路径（可能是临时路径）
+        actual_output_path = temp_output_path if use_temp_output else output_path
+        
         # --- 步骤 1: 打开视频文件 ---
+        # Windows下读取视频也可能有中文路径问题，但这里输入路径通常是从数据库来的相对路径
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
             logger.error(f"无法打开视频文件: {input_path}")
+            if use_temp_output and temp_output_path:
+                os.remove(temp_output_path)
             raise ValueError(f"无法打开视频文件: {input_path}")
 
         # --- 步骤 2: 获取视频基本属性 ---
@@ -158,6 +184,31 @@ class OptimizedVideoPreprocessor:
         cap.release()  # 释放视频读取器
         out.release()  # 释放视频写入器
         cv2.destroyAllWindows()
+
+        # Windows环境：如果使用了临时文件，现在将其重命名为目标文件名
+        if use_temp_output and temp_output_path:
+            try:
+                # 确保目标目录存在
+                output_dir = os.path.dirname(output_path)
+                if output_dir and not os.path.exists(output_dir):
+                    os.makedirs(output_dir, exist_ok=True)
+                
+                # 如果目标文件已存在，先删除
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                
+                # 移动临时文件到目标位置
+                shutil.move(temp_output_path, output_path)
+                logger.info(f"临时文件已重命名为: {output_path}")
+            except Exception as e:
+                logger.error(f"重命名临时文件失败: {e}")
+                # 清理临时文件
+                if os.path.exists(temp_output_path):
+                    try:
+                        os.remove(temp_output_path)
+                    except:
+                        pass
+                raise ValueError(f"无法保存预处理视频到: {output_path}, 错误: {e}")
 
         # 验证输出文件是否存在且有效
         if not os.path.exists(output_path):
