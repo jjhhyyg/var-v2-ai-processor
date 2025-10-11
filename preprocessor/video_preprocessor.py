@@ -188,17 +188,36 @@ class OptimizedVideoPreprocessor:
         # Windows环境：如果使用了临时文件，现在将其复制为目标文件名
         if use_temp_output and temp_output_path:
             try:
+                logger.info(f"开始处理临时文件重命名...")
+                logger.info(f"临时文件路径: {temp_output_path}")
+                logger.info(f"目标文件路径: {output_path}")
+                logger.info(f"临时文件存在: {os.path.exists(temp_output_path)}")
+                if os.path.exists(temp_output_path):
+                    logger.info(f"临时文件大小: {os.path.getsize(temp_output_path)} bytes")
+                
                 # 确保目标目录存在
                 output_dir = os.path.dirname(output_path)
                 if output_dir and not os.path.exists(output_dir):
                     os.makedirs(output_dir, exist_ok=True)
+                    logger.info(f"创建目标目录: {output_dir}")
                 
                 # 如果目标文件已存在，先删除
                 if os.path.exists(output_path):
+                    logger.info(f"删除已存在的目标文件: {output_path}")
                     os.remove(output_path)
                 
+                # 验证临时文件
+                if not os.path.exists(temp_output_path):
+                    raise ValueError(f"临时文件不存在: {temp_output_path}")
+                
+                temp_size = os.path.getsize(temp_output_path)
+                if temp_size == 0:
+                    raise ValueError(f"临时文件大小为0: {temp_output_path}")
+                
+                logger.info(f"开始复制文件 ({temp_size} bytes)...")
+                
                 # 使用二进制复制（避免编码问题）
-                # shutil.move在Windows下处理中文路径可能失败，改用copy+remove
+                copied_bytes = 0
                 with open(temp_output_path, 'rb') as src:
                     with open(output_path, 'wb') as dst:
                         # 分块复制，避免大文件内存问题
@@ -207,12 +226,26 @@ class OptimizedVideoPreprocessor:
                             if not chunk:
                                 break
                             dst.write(chunk)
+                            copied_bytes += len(chunk)
+                
+                logger.info(f"复制完成，共复制 {copied_bytes} bytes")
+                
+                # 验证目标文件
+                if not os.path.exists(output_path):
+                    raise ValueError(f"目标文件创建失败: {output_path}")
+                
+                final_size = os.path.getsize(output_path)
+                logger.info(f"目标文件大小: {final_size} bytes")
+                
+                if final_size != temp_size:
+                    raise ValueError(f"文件大小不匹配: 临时={temp_size}, 目标={final_size}")
                 
                 # 删除临时文件
                 os.remove(temp_output_path)
-                logger.info(f"临时文件已重命名为: {output_path}")
+                logger.info(f"临时文件已删除")
+                logger.info(f"临时文件已成功重命名为: {output_path}")
             except Exception as e:
-                logger.error(f"重命名临时文件失败: {e}")
+                logger.error(f"重命名临时文件失败: {e}", exc_info=True)
                 # 清理临时文件
                 if os.path.exists(temp_output_path):
                     try:
