@@ -88,15 +88,29 @@ class AnomalyEventGenerator:
             
             # 特殊处理：粘连物和锭冠
             if category == 'ADHESION':
-                # 为每个粘连物生成形成和脱落事件
+                # 不再过滤短时粘连物，所有粘连物都需要检查
+                # 只要OpenCV判断在熔池内，就生成事件
+                logger.info(f"Processing {len(objects)} adhesion objects (including short-duration ones)")
+                
+                # 为每个粘连物生成事件（如果掉到熔池里）
                 for obj in objects:
                     adhesion_events = self._generate_adhesion_events(obj, video_perspective)
                     events.extend(adhesion_events)
-                    logger.info(f"Generated {len(adhesion_events)} events for adhesion objectId={obj['objectId']}")
+                    if len(adhesion_events) > 0:
+                        logger.info(f"Generated {len(adhesion_events)} events for adhesion objectId={obj['objectId']}")
             
             elif category == 'CROWN':
+                # 过滤掉持续时间太短的锭冠（噪声/误检）
+                min_duration_frames = int(0.5 * self.fps)  # 至少0.5秒
+                valid_objects = [
+                    obj for obj in objects 
+                    if (obj['lastFrame'] - obj['firstFrame'] + 1) >= min_duration_frames
+                ]
+                
+                logger.info(f"Filtered crown objects: {len(objects)} → {len(valid_objects)} (min duration: {min_duration_frames} frames)")
+                
                 # 为每个锭冠生成脱落事件
-                for obj in objects:
+                for obj in valid_objects:
                     crown_events = self._generate_crown_events(obj)
                     events.extend(crown_events)
                     logger.info(f"Generated {len(crown_events)} events for crown objectId={obj['objectId']}")
@@ -137,46 +151,76 @@ class AnomalyEventGenerator:
         """
         为粘连物生成形成和脱落事件
         
+        策略：
+        1. 先判断脱落位置（是否在熔池中）
+        2. 只有在熔池中的才生成事件
+        3. 对于持续时间<6秒的，只生成脱落事件
+        4. 对于持续时间≥6秒的，生成形成+脱落事件
+        
         Args:
             adhesion_obj: 粘连物对象
             video_perspective: 视频视角 ('LEFT' 或 'RIGHT')
         
         Returns:
-            事件列表（包含形成事件和脱落事件）
+            事件列表（包含形成事件和脱落事件，或只有脱落事件，或空列表）
         """
         events = []
         first_frame = adhesion_obj['firstFrame']
         last_frame = adhesion_obj['lastFrame']
-        
-        # 1. 生成粘连物形成事件（前3秒）
-        formation_end_frame = min(first_frame + self.event_window_frames, last_frame)
-        formation_event = {
-            'eventType': 'ADHESION_FORMED',
-            'startFrame': first_frame,
-            'endFrame': formation_end_frame,
-            'objectId': None,
-            'metadata': None
-        }
-        events.append(formation_event)
-        logger.debug(f"Adhesion formation event: frames {first_frame}-{formation_end_frame}")
-        
-        # 2. 生成粘连物脱落事件（后3秒，带位置判断）
-        drop_start_frame = max(last_frame - self.event_window_frames, first_frame)
+        duration = last_frame - first_frame + 1
         
         # 判断脱落位置
         drop_location = self._analyze_adhesion_drop(adhesion_obj, video_perspective)
         
-        drop_event = {
-            'eventType': 'ADHESION_DROPPED',
-            'startFrame': drop_start_frame,
-            'endFrame': last_frame,
-            'objectId': None,
-            'metadata': {
-                'dropped_location': drop_location
+        # 只有掉到熔池里的粘连物才生成事件
+        if drop_location != 'pool':
+            logger.debug(f"Adhesion objectId={adhesion_obj['objectId']}, duration={duration}f, not in pool (location={drop_location}), skipping")
+            return events
+        
+        logger.debug(f"Adhesion objectId={adhesion_obj['objectId']}, duration={duration}f, dropped to pool, generating events")
+        
+        # 如果持续时间太短（<6秒），只生成脱落事件，避免形成和脱落事件重叠
+        if duration < (2 * self.event_window_frames):
+            # 只生成脱落事件
+            drop_event = {
+                'eventType': 'ADHESION_DROPPED',
+                'startFrame': first_frame,
+                'endFrame': last_frame,
+                'objectId': None,
+                'metadata': {
+                    'dropped_location': drop_location
+                }
             }
-        }
-        events.append(drop_event)
-        logger.debug(f"Adhesion drop event: frames {drop_start_frame}-{last_frame}, location={drop_location}")
+            events.append(drop_event)
+            logger.debug(f"Short adhesion ({duration} frames): only drop event, frames {first_frame}-{last_frame}")
+        else:
+            # 正常情况：生成形成和脱落两个事件
+            # 1. 生成粘连物形成事件（前3秒）
+            formation_end_frame = min(first_frame + self.event_window_frames, last_frame)
+            formation_event = {
+                'eventType': 'ADHESION_FORMED',
+                'startFrame': first_frame,
+                'endFrame': formation_end_frame,
+                'objectId': None,
+                'metadata': None
+            }
+            events.append(formation_event)
+            logger.debug(f"Adhesion formation event: frames {first_frame}-{formation_end_frame}")
+            
+            # 2. 生成粘连物脱落事件（后3秒）
+            drop_start_frame = max(last_frame - self.event_window_frames, first_frame)
+            
+            drop_event = {
+                'eventType': 'ADHESION_DROPPED',
+                'startFrame': drop_start_frame,
+                'endFrame': last_frame,
+                'objectId': None,
+                'metadata': {
+                    'dropped_location': drop_location
+                }
+            }
+            events.append(drop_event)
+            logger.debug(f"Adhesion drop event: frames {drop_start_frame}-{last_frame}")
         
         return events
 
@@ -481,7 +525,13 @@ class AnomalyEventGenerator:
 
     def _is_surrounded_by_pool(self, frame: np.ndarray, bbox: List[float], frame_number: int) -> bool:
         """
-        使用连通域分析判断物体是否被熔池包围（即与电极断开连接）
+        使用改进的连通域分析判断物体是否被熔池包围（即与电极断开连接）
+        
+        改进算法：
+        1. 从bbox中心点开始，找到该点所在的连通域
+        2. 计算该连通域的bbox与输入bbox的IoU重合度
+        3. 判断该连通域是否与电极连通域相同
+        4. 只有当IoU高且不是电极连通域时，才判定为在熔池中
         
         Args:
             frame: 原始帧图像
@@ -494,6 +544,9 @@ class AnomalyEventGenerator:
         """
         if frame is None or not bbox or len(bbox) < 4:
             return False
+        
+        # IoU阈值：连通域bbox与输入bbox的重合度阈值
+        IOU_THRESHOLD = 0.3
         
         try:
             # 1. 转灰度图
@@ -542,28 +595,84 @@ class AnomalyEventGenerator:
                 logger.debug(f"Frame {frame_number}: Cannot find electrode region")
                 return False
             
-            # 7. 获取粘连物bbox区域的标签
+            # 7. 获取bbox中心点，找到该点所在的连通域
             x1, y1, x2, y2 = map(int, bbox)
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
             
-            # 检查bbox区域是否与电极连通域有交集
-            bbox_region = labels[y1:y2, x1:x2]
-            has_electrode = np.any(bbox_region == electrode_label)
+            bbox_center_x = (x1 + x2) // 2
+            bbox_center_y = (y1 + y2) // 2
             
-            # 8. 判断结果
-            is_separated = not has_electrode
+            object_label = labels[bbox_center_y, bbox_center_x]
             
-            if is_separated:
-                logger.debug(f"Frame {frame_number}: Object is SEPARATED from electrode (floating in pool)")
+            # 如果中心点在背景上（亮色熔池区域），说明已经脱落到熔池
+            if object_label == 0:
+                logger.debug(f"Frame {frame_number}: Object center is in background (pool)")
+                return True
+            
+            # 8. 获取该连通域的bbox
+            object_stats = stats[object_label]
+            obj_x, obj_y, obj_w, obj_h = object_stats[:4]
+            centroid_bbox = [obj_x, obj_y, obj_x + obj_w, obj_y + obj_h]
+            
+            # 9. 计算连通域bbox与输入bbox的IoU
+            iou = self._calculate_bbox_iou(bbox, centroid_bbox)
+            
+            # 10. 判断是否与电极连通域相同
+            is_same_as_electrode = (object_label == electrode_label)
+            
+            # 11. 综合判断
+            # 如果IoU很高且不是电极连通域 -> 在熔池中（物体已脱落）
+            # 如果IoU很低或者是电极连通域 -> 还在电极上
+            is_in_pool = (iou >= IOU_THRESHOLD) and (not is_same_as_electrode)
+            
+            if is_in_pool:
+                logger.debug(f"Frame {frame_number}: Object is SEPARATED from electrode "
+                           f"(IoU={iou:.3f}, is_electrode={is_same_as_electrode})")
             else:
-                logger.debug(f"Frame {frame_number}: Object is CONNECTED to electrode")
+                logger.debug(f"Frame {frame_number}: Object is CONNECTED to electrode "
+                           f"(IoU={iou:.3f}, is_electrode={is_same_as_electrode})")
             
-            return is_separated
+            return is_in_pool
             
         except Exception as e:
             logger.warning(f"Frame {frame_number}: Error in pool detection: {e}")
             return False
+    
+    def _calculate_bbox_iou(self, bbox1: List[float], bbox2: List[float]) -> float:
+        """
+        计算两个bbox的IoU（交并比）
+        
+        Args:
+            bbox1: 边界框1 [x1, y1, x2, y2]
+            bbox2: 边界框2 [x1, y1, x2, y2]
+        
+        Returns:
+            IoU值（0-1之间）
+        """
+        x1_1, y1_1, x2_1, y2_1 = bbox1
+        x1_2, y1_2, x2_2, y2_2 = bbox2
+        
+        # 计算交集区域
+        x1_i = max(x1_1, x1_2)
+        y1_i = max(y1_1, y1_2)
+        x2_i = min(x2_1, x2_2)
+        y2_i = min(y2_1, y2_2)
+        
+        if x2_i < x1_i or y2_i < y1_i:
+            return 0.0
+        
+        intersection = (x2_i - x1_i) * (y2_i - y1_i)
+        
+        # 计算并集区域
+        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union = area1 + area2 - intersection
+        
+        if union == 0:
+            return 0.0
+        
+        return intersection / union
 
     def _calculate_trajectory_movement(self, trajectory: List[Dict[str, Any]]) -> float:
         """
