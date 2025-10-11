@@ -6,7 +6,6 @@ import cv2
 import time
 import logging
 import os
-import json
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -17,6 +16,7 @@ from .metrics_calculator import MetricsCalculator
 from .anomaly_event_generator import AnomalyEventGenerator
 from utils.callback import BackendCallback
 from utils.video_storage import VideoStorageManager
+from utils.atomic_write import atomic_write_json, safe_read_json
 from config import Config
 from preprocessor import OptimizedVideoPreprocessor
 
@@ -374,15 +374,20 @@ class VideoAnalyzer:
                 except Exception as e:
                     logger.error(f"Task {task_id}: Failed to apply tracking merge: {e}, using original tracking objects")
 
-            # 保存检测结果到文件,供生成结果视频时使用
-            tracking_results_dir = Path('storage/tracking_results')
+            # 保存检测结果到文件,供生成结果视频时使用（使用原子写入）
+            tracking_results_dir = Path(Config.get_storage_path('tracking_results'))
             tracking_results_dir.mkdir(parents=True, exist_ok=True)
             tracking_file = tracking_results_dir / f"{task_id}_tracking.json"
 
             try:
-                with open(tracking_file, 'w', encoding='utf-8') as f:
-                    json.dump(all_detections, f, ensure_ascii=False, indent=2)
-                logger.info(f"Task {task_id}: Tracking results saved to {tracking_file}")
+                atomic_write_json(
+                    str(tracking_file),
+                    all_detections,
+                    indent=2,
+                    ensure_ascii=False,
+                    use_lock=True
+                )
+                logger.info(f"Task {task_id}: Tracking results saved atomically to {tracking_file}")
             except Exception as e:
                 logger.error(f"Task {task_id}: Failed to save tracking results: {e}")
 
@@ -461,13 +466,16 @@ class VideoAnalyzer:
             logger.info(f"Task {task_id}: Starting export annotated video")
 
             # 读取之前保存的追踪结果
-            tracking_file = Path('storage/tracking_results') / f"{task_id}_tracking.json"
+            tracking_file = Path(Config.get_storage_path('tracking_results')) / f"{task_id}_tracking.json"
             if not tracking_file.exists():
                 raise FileNotFoundError(f"Tracking results not found: {tracking_file}. Please run analyze_video_task first.")
 
             logger.info(f"Task {task_id}: Loading tracking results from {tracking_file}")
-            with open(tracking_file, 'r', encoding='utf-8') as f:
-                all_detections = json.load(f)
+            all_detections = safe_read_json(
+                str(tracking_file),
+                use_lock=True,
+                lock_timeout=30.0
+            )
             logger.info(f"Task {task_id}: Loaded {len(all_detections)} frames of tracking results")
 
             # 打开视频文件

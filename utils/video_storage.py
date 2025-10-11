@@ -12,6 +12,7 @@ import shutil
 import logging
 from pathlib import Path
 from typing import Optional, Tuple, Callable
+from utils.file_lock import FileLock
 
 logger = logging.getLogger(__name__)
 
@@ -175,11 +176,13 @@ class VideoStorageManager:
         width: int,
         height: int,
         codecs: Optional[list] = None,
-        estimate_size_mb: Optional[float] = None
+        estimate_size_mb: Optional[float] = None,
+        use_file_lock: bool = True,
+        lock_timeout: float = 300.0
     ) -> Tuple[cv2.VideoWriter, str, Callable]:
         """
         创建视频写入器（统一处理中文路径、编码器选择等）
-        
+
         Args:
             output_path: 输出路径（可能包含中文）
             fps: 帧率
@@ -187,18 +190,35 @@ class VideoStorageManager:
             height: 视频高度
             codecs: 编码器列表（可选，默认使用 DEFAULT_CODECS）
             estimate_size_mb: 预估文件大小（MB），用于磁盘空间检查
-        
+            use_file_lock: 是否使用文件锁（防止并发写入）
+            lock_timeout: 文件锁超时时间（秒）
+
         Returns:
             tuple: (VideoWriter对象, 实际写入路径, 清理函数)
-        
+
         Raises:
             ValueError: 无法创建写入器
             IOError: 磁盘空间不足
+            TimeoutError: 无法获取文件锁
         """
         # 检查磁盘空间
         if estimate_size_mb:
             self.check_disk_space(output_path, estimate_size_mb)
-        
+
+        # 获取文件锁（如果启用）
+        file_lock = None
+        if use_file_lock:
+            try:
+                file_lock = FileLock(output_path, exclusive=True, timeout=lock_timeout)
+                file_lock.acquire()
+                logger.info(f"File lock acquired for {output_path}")
+            except TimeoutError as e:
+                logger.error(f"Failed to acquire file lock for {output_path}: {e}")
+                raise
+            except Exception as e:
+                logger.warning(f"Failed to create file lock for {output_path}: {e}, continuing without lock")
+                file_lock = None
+
         # 处理 Windows 下中文路径问题
         use_temp_output = False
         temp_output_path = None
@@ -250,6 +270,12 @@ class VideoStorageManager:
             # 清理临时文件
             if use_temp_output and temp_output_path:
                 self._remove_temp_file(temp_output_path)
+            # 释放文件锁
+            if file_lock:
+                try:
+                    file_lock.release()
+                except Exception as e:
+                    logger.warning(f"Failed to release file lock: {e}")
             raise ValueError(f"无法创建输出视频文件: {output_path}，所有编码器均不可用")
         
         if used_codec == 'MPEG-4':
@@ -259,12 +285,23 @@ class VideoStorageManager:
         def finalize(success: bool = True):
             """
             完成视频写入的清理函数
-            
+
             Args:
                 success: 是否成功完成（成功则移动临时文件，失败则删除）
             """
-            out.release()
-            
+            try:
+                out.release()
+            except Exception as e:
+                logger.warning(f"Failed to release VideoWriter: {e}")
+
+            # 释放文件锁
+            if file_lock:
+                try:
+                    file_lock.release()
+                    logger.debug(f"File lock released for {output_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to release file lock: {e}")
+
             if use_temp_output and temp_output_path:
                 if success:
                     try:

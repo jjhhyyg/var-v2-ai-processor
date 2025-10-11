@@ -114,13 +114,20 @@ class Config:
     # 是否显示详细输出
     VERBOSE = os.getenv('YOLO_VERBOSE', 'False').lower() == 'true'
 
+    # ========================================
     # 存储路径配置（相对于 codes/ 目录）
+    # ========================================
+
+    # 基础存储目录
     STORAGE_BASE_PATH = os.getenv('STORAGE_BASE_PATH', 'storage')
+
+    # 子目录配置（推荐使用 get_storage_path(subdir) 方法获取完整路径）
     STORAGE_VIDEOS_SUBDIR = os.getenv('STORAGE_VIDEOS_SUBDIR', 'videos')
     STORAGE_RESULT_VIDEOS_SUBDIR = os.getenv('STORAGE_RESULT_VIDEOS_SUBDIR', 'result_videos')
     STORAGE_PREPROCESSED_VIDEOS_SUBDIR = os.getenv('STORAGE_PREPROCESSED_VIDEOS_SUBDIR', 'preprocessed_videos')
-    
-    # 完整路径（废弃，保留用于向后兼容）
+    STORAGE_TRACKING_RESULTS_SUBDIR = os.getenv('STORAGE_TRACKING_RESULTS_SUBDIR', 'tracking_results')
+
+    # 完整路径（⚠️ 已废弃，保留用于向后兼容，请使用 get_storage_path() 方法）
     RESULT_VIDEO_PATH = os.getenv('RESULT_VIDEO_PATH', './storage/result_videos')
     PREPROCESSED_VIDEO_PATH = os.getenv('PREPROCESSED_VIDEO_PATH', './storage/preprocessed_videos')
     
@@ -162,17 +169,28 @@ class Config:
     @classmethod
     def get_storage_path(cls, subdir: str = '') -> str:
         """
-        获取存储路径（绝对路径）
-        
+        获取存储路径（绝对路径）- 推荐使用此方法代替直接使用路径常量
+
         Args:
-            subdir: 子目录名称，如 'videos', 'result_videos' 等
-            
+            subdir: 子目录名称，支持：
+                - 'videos': 原始上传视频
+                - 'result_videos': 带标注的结果视频
+                - 'preprocessed_videos': 预处理后的视频
+                - 'tracking_results': 追踪结果JSON文件
+                - 或任意自定义子目录名称
+
         Returns:
-            绝对路径
-            
-        Example:
+            绝对路径（规范化后）
+
+        Examples:
             >>> Config.get_storage_path('videos')
             '/path/to/codes/storage/videos'
+
+            >>> Config.get_storage_path('tracking_results')
+            '/path/to/codes/storage/tracking_results'
+
+            >>> Config.get_storage_path()
+            '/path/to/codes/storage'
         """
         if subdir:
             path = os.path.join(cls.STORAGE_BASE_PATH, subdir)
