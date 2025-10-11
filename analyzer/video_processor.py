@@ -454,8 +454,7 @@ class VideoAnalyzer:
             是否成功导出
         """
         import sys
-        import tempfile
-        import shutil
+        import uuid
         
         callback = BackendCallback(task_id, callback_url)
 
@@ -468,10 +467,15 @@ class VideoAnalyzer:
                 output_path.encode('ascii')
             except UnicodeEncodeError:
                 # 包含非ASCII字符（如中文），使用临时文件
+                # 在同一目录下创建临时文件（避免跨目录移动和OpenCV写入临时目录的问题）
                 use_temp_output = True
-                # 创建临时文件
-                temp_fd, temp_output_path = tempfile.mkstemp(suffix='.mp4', prefix='temp_result_')
-                os.close(temp_fd)
+                output_dir = os.path.dirname(output_path)
+                # 确保目录存在
+                if output_dir and not os.path.exists(output_dir):
+                    os.makedirs(output_dir, exist_ok=True)
+                # 在同一目录下创建临时文件（使用UUID避免冲突）
+                temp_filename = f"temp_{uuid.uuid4().hex}.mp4"
+                temp_output_path = os.path.join(output_dir, temp_filename)
                 logger.info(f"Task {task_id}: Windows环境检测到非ASCII路径，使用临时文件: {temp_output_path}")
         
         # 实际写入的路径（可能是临时路径）

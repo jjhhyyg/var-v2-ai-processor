@@ -60,8 +60,7 @@ class OptimizedVideoPreprocessor:
         :param progress_callback: 进度回调函数,接收(当前帧数, 总帧数, 已耗时秒数)
         """
         import sys
-        import tempfile
-        import shutil
+        import uuid
         
         # 处理Windows下中文路径乱码问题
         # 在Windows下使用临时英文路径，处理完成后再重命名
@@ -73,10 +72,16 @@ class OptimizedVideoPreprocessor:
                 output_path.encode('ascii')
             except UnicodeEncodeError:
                 # 包含非ASCII字符（如中文），使用临时文件
+                # 不使用系统临时目录，而是在目标目录下创建临时文件
+                # 这样可以避免跨目录移动和OpenCV写入临时目录的问题
                 use_temp_output = True
-                # 创建临时文件（自动清理）
-                temp_fd, temp_output_path = tempfile.mkstemp(suffix='.mp4', prefix='temp_preprocessed_')
-                os.close(temp_fd)  # 关闭文件描述符
+                output_dir = os.path.dirname(output_path)
+                # 确保目录存在
+                if output_dir and not os.path.exists(output_dir):
+                    os.makedirs(output_dir, exist_ok=True)
+                # 在同一目录下创建临时文件（使用UUID避免冲突）
+                temp_filename = f"temp_{uuid.uuid4().hex}.mp4"
+                temp_output_path = os.path.join(output_dir, temp_filename)
                 logger.info(f"Windows环境检测到非ASCII路径，使用临时文件: {temp_output_path}")
         
         # 实际写入的路径（可能是临时路径）
