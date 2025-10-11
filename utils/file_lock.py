@@ -77,7 +77,8 @@ class FileLock:
         self.lock_file_handle: Optional[int] = None
 
         # 线程锁（确保同一进程内的线程安全）
-        self._thread_lock = threading.Lock()
+        # 使用RLock支持重入，避免同一线程重复acquire导致死锁
+        self._thread_lock = threading.RLock()
 
         # 是否已获取锁
         self._locked = False
@@ -95,11 +96,8 @@ class FileLock:
             TimeoutError: 超时未能获取锁
             IOError: 文件操作失败
         """
-        # 先获取线程锁
-        if not self._thread_lock.acquire(blocking=False):
-            logger.warning(f"Thread lock already held for {self.file_path}")
-            # 如果当前线程已持有锁，等待
-            self._thread_lock.acquire()
+        # 获取线程锁（RLock支持重入，同一线程可以多次acquire）
+        self._thread_lock.acquire()
 
         try:
             start_time = time.time()
@@ -146,9 +144,12 @@ class FileLock:
                     time.sleep(self.retry_interval)
 
         except Exception:
-            # 发生异常，释放线程锁
-            if self._thread_lock.locked():
+            # 发生异常，释放线程锁（RLock会自动处理重入计数）
+            try:
                 self._thread_lock.release()
+            except RuntimeError:
+                # 如果没有对应的acquire，RLock会抛出RuntimeError，忽略即可
+                pass
             raise
 
     def _lock_windows(self):
@@ -200,9 +201,12 @@ class FileLock:
             logger.debug(f"Lock released for {self.file_path}")
 
         finally:
-            # 释放线程锁
-            if self._thread_lock.locked():
+            # 释放线程锁（RLock会自动处理重入计数）
+            try:
                 self._thread_lock.release()
+            except RuntimeError:
+                # 如果没有对应的acquire，RLock会抛出RuntimeError，忽略即可
+                pass
 
     def __enter__(self):
         """上下文管理器入口"""
@@ -248,7 +252,8 @@ class FileLockManager:
         if self._initialized:
             return
 
-        # 存储当前活跃的锁（文件路径 -> FileLock对象）
+        # 存储当前活跃的锁（(文件路径, 是否独占) -> FileLock对象）
+        # 键改为元组以区分独占锁和共享锁
         self._active_locks = {}
         self._locks_lock = threading.Lock()
 
@@ -271,28 +276,44 @@ class FileLockManager:
 
         Returns:
             FileLock: 文件锁对象
+
+        Note:
+            使用 (file_path, exclusive) 作为键，区分独占锁和共享锁
+            相同文件的独占锁和共享锁会创建不同的 FileLock 对象
         """
         file_path = str(Path(file_path).resolve())
+        lock_key = (file_path, exclusive)
 
         with self._locks_lock:
-            if file_path not in self._active_locks:
-                self._active_locks[file_path] = FileLock(
+            if lock_key not in self._active_locks:
+                self._active_locks[lock_key] = FileLock(
                     file_path,
                     exclusive=exclusive,
                     timeout=timeout
                 )
-            return self._active_locks[file_path]
+                logger.debug(f"Created new lock: {file_path} (exclusive={exclusive})")
+            return self._active_locks[lock_key]
 
-    def remove_lock(self, file_path: str):
+    def remove_lock(self, file_path: str, exclusive: Optional[bool] = None):
         """
         移除文件锁记录
 
         Args:
             file_path: 文件路径
+            exclusive: 锁类型（True=独占锁, False=共享锁, None=移除所有类型）
         """
         file_path = str(Path(file_path).resolve())
 
         with self._locks_lock:
-            if file_path in self._active_locks:
-                del self._active_locks[file_path]
-                logger.debug(f"Removed lock record for {file_path}")
+            if exclusive is None:
+                # 移除所有类型的锁
+                keys_to_remove = [k for k in self._active_locks.keys() if k[0] == file_path]
+                for key in keys_to_remove:
+                    del self._active_locks[key]
+                    logger.debug(f"Removed lock record for {file_path} (exclusive={key[1]})")
+            else:
+                # 移除特定类型的锁
+                lock_key = (file_path, exclusive)
+                if lock_key in self._active_locks:
+                    del self._active_locks[lock_key]
+                    logger.debug(f"Removed lock record for {file_path} (exclusive={exclusive})")

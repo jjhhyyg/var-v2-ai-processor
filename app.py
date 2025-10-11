@@ -29,6 +29,53 @@ analyzer = None
 mq_consumer = None
 
 
+class BackgroundTaskManager:
+    """后台任务管理器（用于优雅关闭）"""
+
+    def __init__(self):
+        self.active_threads = []
+        self.threads_lock = threading.Lock()
+        self.shutdown_event = threading.Event()
+
+    def add_thread(self, thread: threading.Thread):
+        """添加线程到管理列表"""
+        with self.threads_lock:
+            self.active_threads.append(thread)
+
+    def shutdown(self, timeout: float = 60.0):
+        """优雅关闭所有后台任务"""
+        logger.info("Shutting down background tasks...")
+        self.shutdown_event.set()
+
+        completed = 0
+        failed = 0
+
+        with self.threads_lock:
+            active_count = len(self.active_threads)
+            logger.info(f"Waiting for {active_count} background tasks to complete (timeout: {timeout}s)...")
+
+        for thread in self.active_threads[:]:
+            try:
+                thread.join(timeout=timeout)
+                if thread.is_alive():
+                    logger.warning(f"Thread {thread.name} did not finish within timeout")
+                    failed += 1
+                else:
+                    completed += 1
+            except Exception as e:
+                logger.error(f"Error waiting for thread {thread.name}: {e}")
+                failed += 1
+
+        logger.info(f"Background tasks shutdown: {completed} completed, {failed} timed out")
+
+        with self.threads_lock:
+            self.active_threads.clear()
+
+
+# 全局后台任务管理器
+task_manager = BackgroundTaskManager()
+
+
 def init_analyzer():
     """初始化视频分析器"""
     global analyzer
@@ -153,13 +200,15 @@ def analyze_video():
 
         # 启动异步分析（在生产环境中应该使用Celery或类似的任务队列）
         # 这里为了简化，直接在后台线程中执行
-        import threading
+        # 使用非daemon线程确保任务完整性
         thread = threading.Thread(
             target=analyzer.analyze_video_task,
             args=(task_id, absolute_video_path, video_duration, timeout_threshold,
                   confidence_threshold, iou_threshold),
-            daemon=True
+            daemon=False,
+            name=f"Analyze-{task_id}"
         )
+        task_manager.add_thread(thread)
         thread.start()
 
         return jsonify({
@@ -232,8 +281,7 @@ def export_annotated_video():
         confidence_threshold = config.get('confidenceThreshold', Config.DEFAULT_CONFIDENCE_THRESHOLD)
         iou_threshold = config.get('iouThreshold', Config.DEFAULT_IOU_THRESHOLD)
 
-        # 异步导出视频
-        import threading
+        # 异步导出视频（使用非daemon线程确保任务完整性）
         def export_task():
             success = analyzer.export_annotated_video(
                 task_id, absolute_video_path, output_path,
@@ -265,7 +313,12 @@ def export_annotated_video():
             else:
                 logger.error(f"Task {task_id}: Video export failed")
 
-        thread = threading.Thread(target=export_task, daemon=True)
+        thread = threading.Thread(
+            target=export_task,
+            daemon=False,
+            name=f"Export-{task_id}"
+        )
+        task_manager.add_thread(thread)
         thread.start()
 
         return jsonify({

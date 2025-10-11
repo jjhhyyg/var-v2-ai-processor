@@ -34,6 +34,11 @@ class RabbitMQConsumer:
         self.active_tasks = 0
         self.active_tasks_lock = threading.Lock()
 
+        # 优雅关闭机制
+        self.shutdown_event = threading.Event()
+        self.active_threads = []
+        self.threads_lock = threading.Lock()
+
     def init_analyzer(self):
         """
         初始化视频分析器（已弃用）
@@ -114,9 +119,15 @@ class RabbitMQConsumer:
 
             # 定义处理任务的函数
             def process_task():
-                # 获取信号量，限制并发数
-                acquired = self.semaphore.acquire(blocking=True)
+                # 检查是否需要关闭
+                if self.shutdown_event.is_set():
+                    logger.info(f"Task {task_id}: Skipped due to shutdown")
+                    return
 
+                # 获取信号量并执行任务（确保异常安全）
+                # 将 acquire 放在 try 外面，因为 acquire 本身不会失败
+                # 但用 try-finally 确保信号量一定被释放
+                self.semaphore.acquire(blocking=True)
                 try:
                     # 更新活跃任务计数
                     with self.active_tasks_lock:
@@ -232,11 +243,17 @@ class RabbitMQConsumer:
                     self.semaphore.release()
 
             # 在后台线程中执行分析（避免阻塞消费者）
+            # 使用非daemon线程确保任务完整性
             thread = threading.Thread(
                 target=process_task,
-                daemon=True,
+                daemon=False,
                 name=f"Task-{task_id}"
             )
+
+            # 添加到活跃线程列表（用于优雅关闭）
+            with self.threads_lock:
+                self.active_threads.append(thread)
+
             thread.start()
 
             # 确认消息（任务已接受）
@@ -247,9 +264,40 @@ class RabbitMQConsumer:
             logger.error(f"Failed to decode message: {e}")
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
-            # 重新入队（如果是临时错误）
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            logger.error(f"Error processing message: {e}", exc_info=True)
+
+            # 智能错误重试策略：区分可重试和不可重试的错误
+            # 不可重试的错误（永久性失败）
+            NON_RETRIABLE_ERRORS = (
+                FileNotFoundError,      # 文件不存在
+                ValueError,             # 参数错误
+                KeyError,              # 缺少必需字段
+                TypeError,             # 类型错误
+            )
+
+            # 可重试的错误（临时性失败）
+            RETRIABLE_ERRORS = (
+                ConnectionError,        # 网络连接错误
+                TimeoutError,          # 超时错误
+                IOError,               # IO错误（可能是临时的）
+                OSError,               # 系统错误（可能是临时的）
+            )
+
+            # 判断是否应该重试
+            should_requeue = False
+
+            if isinstance(e, NON_RETRIABLE_ERRORS):
+                logger.error(f"Non-retriable error detected: {type(e).__name__}, message will not be requeued")
+                should_requeue = False
+            elif isinstance(e, RETRIABLE_ERRORS):
+                logger.warning(f"Retriable error detected: {type(e).__name__}, message will be requeued")
+                should_requeue = True
+            else:
+                # 未知错误，默认不重试（避免无限循环）
+                logger.error(f"Unknown error type: {type(e).__name__}, message will not be requeued by default")
+                should_requeue = False
+
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=should_requeue)
 
     def start_consuming(self):
         """开始消费消息"""
@@ -257,7 +305,7 @@ class RabbitMQConsumer:
             # 设置预取数量为最大并发数，允许队列预先分配任务
             # 但实际并发由信号量控制
             self.channel.basic_qos(prefetch_count=self.max_concurrent_tasks)
-            
+
             logger.info(f"Maximum concurrent tasks set to: {self.max_concurrent_tasks}")
 
             # 开始消费
@@ -277,9 +325,55 @@ class RabbitMQConsumer:
             self.stop()
             raise
 
+    def shutdown(self, timeout: float = 30.0):
+        """
+        优雅关闭：等待所有活跃任务完成
+
+        Args:
+            timeout: 每个任务的等待超时时间（秒）
+        """
+        logger.info("Initiating graceful shutdown...")
+
+        # 设置关闭标志，不再接受新任务
+        self.shutdown_event.set()
+
+        # 等待所有活跃线程完成
+        with self.threads_lock:
+            active_count = len(self.active_threads)
+            if active_count == 0:
+                logger.info("No active tasks to wait for")
+                return
+
+            logger.info(f"Waiting for {active_count} active tasks to complete (timeout: {timeout}s per task)...")
+
+        completed = 0
+        failed = 0
+
+        for thread in self.active_threads[:]:  # 复制列表，避免迭代时修改
+            try:
+                thread.join(timeout=timeout)
+                if thread.is_alive():
+                    logger.warning(f"Thread {thread.name} did not finish within timeout")
+                    failed += 1
+                else:
+                    completed += 1
+            except Exception as e:
+                logger.error(f"Error waiting for thread {thread.name}: {e}")
+                failed += 1
+
+        logger.info(f"Shutdown complete: {completed} tasks completed, {failed} tasks timed out")
+
+        # 清空线程列表
+        with self.threads_lock:
+            self.active_threads.clear()
+
     def stop(self):
         """停止消费者"""
         try:
+            # 先优雅关闭所有任务
+            self.shutdown(timeout=30.0)
+
+            # 然后关闭RabbitMQ连接
             if self.channel and self.channel.is_open:
                 self.channel.stop_consuming()
                 self.channel.close()
