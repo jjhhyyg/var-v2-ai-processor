@@ -11,14 +11,13 @@ from config import Config
 from analyzer.video_processor import VideoAnalyzer
 from mq_consumer import RabbitMQConsumer
 
-# 配置日志
-log_level = os.getenv('AI_LOG_LEVEL', 'INFO').upper()
+# 配置日志（使用统一的配置）
 logging.basicConfig(
-    level=getattr(logging, log_level, logging.INFO),
+    level=getattr(logging, Config.LOG_LEVEL, logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-logger.info(f"日志级别设置为: {log_level}")
+logger.info(f"日志级别设置为: {Config.LOG_LEVEL}")
 
 # 创建Flask应用
 app = Flask(__name__)

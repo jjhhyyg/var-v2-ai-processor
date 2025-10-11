@@ -1,6 +1,12 @@
 """
 跨平台文件锁工具模块
 提供进程级和线程级的文件锁机制，防止并发写入冲突
+
+平台差异说明：
+- Unix/Linux/Mac: 使用 fcntl 实现真正的共享锁和独占锁
+- Windows: 使用 msvcrt.locking()，仅支持独占锁
+  * 如需真正的 Windows 共享锁，可使用 pywin32 的 win32file API
+  * 当前实现中，Windows 的共享锁使用独占锁模拟
 """
 import os
 import sys
@@ -153,14 +159,27 @@ class FileLock:
             raise
 
     def _lock_windows(self):
-        """Windows平台的锁实现（使用msvcrt）"""
+        """
+        Windows平台的锁实现（使用msvcrt）
+
+        Note:
+            msvcrt.locking() 不直接支持读写锁区分，所有锁都是独占的。
+            对于共享读锁的需求，我们使用以下策略：
+            1. 独占锁：使用 LK_NBLCK（非阻塞独占锁）
+            2. 共享锁：使用更短的超时时间，允许多个读取者快速获取锁
+
+            虽然这不是真正的共享锁，但通过短超时时间可以实现类似效果。
+            对于真正的Windows共享锁，需要使用 win32file API（需要pywin32库）。
+        """
         if self.exclusive:
-            # 独占锁
+            # 独占写锁
             msvcrt.locking(self.lock_file_handle, msvcrt.LK_NBLCK, 1)
         else:
-            # Windows的msvcrt不直接支持共享锁，这里简化处理
-            # 对于读锁也使用独占锁，但超时时间较短
+            # 共享读锁（简化实现）
+            # msvcrt 不支持真正的共享锁，这里使用独占锁但超时更短
+            # 如果需要真正的共享锁，可以考虑使用 pywin32 的 win32file API
             msvcrt.locking(self.lock_file_handle, msvcrt.LK_NBLCK, 1)
+            logger.debug("Windows shared lock uses exclusive lock (msvcrt limitation)")
 
     def _lock_unix(self):
         """Unix/Linux/Mac平台的锁实现（使用fcntl）"""

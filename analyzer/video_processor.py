@@ -97,6 +97,9 @@ class VideoAnalyzer:
         self.event_detector = EventDetector()
         self.metrics_calculator = MetricsCalculator()
 
+        # 资源管理标志
+        self._is_cleaned_up = False
+
         # 初始化视频预处理器（仅使用 CPU）
         self.preprocessor = OptimizedVideoPreprocessor()
         
@@ -440,6 +443,59 @@ class VideoAnalyzer:
             'yolo_model': self.yolo_tracker.get_model_info(),
             'device': str(self.device)
         }
+
+    def cleanup(self):
+        """
+        清理资源（释放GPU/CPU内存）
+
+        Note:
+            - 释放YOLO模型占用的GPU/CPU内存
+            - 清理视频预处理器的临时资源
+            - 避免内存泄漏，特别是在创建多个分析器实例时
+        """
+        if self._is_cleaned_up:
+            return
+
+        try:
+            # 清理YOLO模型资源
+            if hasattr(self, 'yolo_tracker') and self.yolo_tracker is not None:
+                if hasattr(self.yolo_tracker, 'model') and self.yolo_tracker.model is not None:
+                    # 将模型移到CPU并清理GPU缓存
+                    try:
+                        self.yolo_tracker.model.to('cpu')
+                        if self.device.type == 'cuda':
+                            import torch
+                            torch.cuda.empty_cache()
+                            logger.debug("CUDA cache cleared")
+                        elif self.device.type == 'mps':
+                            import torch
+                            if hasattr(torch.mps, 'empty_cache'):
+                                torch.mps.empty_cache()
+                                logger.debug("MPS cache cleared")
+                    except Exception as e:
+                        logger.warning(f"Failed to clear device cache: {e}")
+
+            # 清理预处理器资源（如果有临时文件）
+            if hasattr(self, 'preprocessor') and self.preprocessor is not None:
+                # 预处理器当前没有需要清理的资源，但保留扩展点
+                pass
+
+            self._is_cleaned_up = True
+            logger.debug("VideoAnalyzer resources cleaned up")
+
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+
+    def __del__(self):
+        """
+        析构函数：确保资源被释放
+        """
+        if not self._is_cleaned_up:
+            logger.warning("VideoAnalyzer was not explicitly cleaned up, cleaning in destructor")
+            try:
+                self.cleanup()
+            except Exception as e:
+                logger.error(f"Error in destructor cleanup: {e}")
 
     def export_annotated_video(self, task_id: int, video_path: str,
                                output_path: str,

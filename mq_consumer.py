@@ -388,10 +388,12 @@ class RabbitMQConsumer:
 
 def main():
     """主函数"""
+    # 使用统一的日志级别配置
     logging.basicConfig(
-        level=logging.INFO,
+        level=getattr(logging, Config.LOG_LEVEL, logging.INFO),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
+    logger.info(f"日志级别设置为: {Config.LOG_LEVEL}")
 
     consumer = RabbitMQConsumer()
 

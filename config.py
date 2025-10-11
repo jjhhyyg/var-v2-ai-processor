@@ -1,5 +1,33 @@
 """
 AI处理模块配置文件
+
+环境变量配置说明：
+所有配置项都可以通过环境变量覆盖，环境变量在 codes/.env 文件中定义。
+
+核心配置：
+- AI_PROCESSOR_HOST: Flask服务监听地址（默认：0.0.0.0）
+- AI_PROCESSOR_PORT: Flask服务端口（默认：5000）
+- AI_PROCESSOR_DEBUG: 是否启用调试模式（默认：False）
+- AI_LOG_LEVEL: 日志级别（默认：INFO）支持：DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+YOLO模型配置：
+- YOLO_MODEL_PATH: 模型文件路径（默认：weights/best.pt）
+- YOLO_DEVICE: 计算设备（默认：''，自动选择，优先级：CUDA > MPS > CPU）
+- DEFAULT_CONFIDENCE_THRESHOLD: 默认置信度阈值（默认：0.5）
+- DEFAULT_IOU_THRESHOLD: 默认IOU阈值（默认：0.45）
+
+存储路径配置：
+- STORAGE_BASE_PATH: 基础存储目录（默认：storage，相对于codes/目录）
+- STORAGE_*_SUBDIR: 各子目录名称（推荐使用 get_storage_path() 方法获取完整路径）
+
+RabbitMQ配置：
+- RABBITMQ_HOST: RabbitMQ服务器地址（默认：localhost）
+- RABBITMQ_PORT: RabbitMQ端口（默认：5672）
+- RABBITMQ_USER: 用户名（默认：var_user）
+- RABBITMQ_PASSWORD: 密码（默认：var_password）
+
+后端服务配置：
+- BACKEND_BASE_URL: 后端服务基础URL（默认：http://localhost:8080）
 """
 import os
 import torch
@@ -12,26 +40,50 @@ load_dotenv(os.path.join(_root_dir, '.env'))
 
 
 class Config:
-    """AI处理模块配置类"""
+    """
+    AI处理模块配置类
 
-    # Flask配置
-    FLASK_HOST = os.getenv('AI_PROCESSOR_HOST', '0.0.0.0')
-    FLASK_PORT = int(os.getenv('AI_PROCESSOR_PORT', 5000))
-    DEBUG = os.getenv('AI_PROCESSOR_DEBUG', 'False').lower() == 'true'
+    所有配置项都可以通过环境变量覆盖。
+    推荐使用提供的类方法来获取路径和URL，而不是直接访问路径常量。
+    """
 
+    # ========================================
+    # Flask服务配置
+    # ========================================
+    FLASK_HOST = os.getenv('AI_PROCESSOR_HOST', '0.0.0.0')  # 监听地址（0.0.0.0=所有网卡）
+    FLASK_PORT = int(os.getenv('AI_PROCESSOR_PORT', 5000))  # 服务端口
+    DEBUG = os.getenv('AI_PROCESSOR_DEBUG', 'False').lower() == 'true'  # 调试模式
+
+    # ========================================
+    # 日志配置
+    # ========================================
+    # 日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL
+    LOG_LEVEL = os.getenv('AI_LOG_LEVEL', 'INFO').upper()
+
+    # ========================================
+    # 后端服务配置
+    # ========================================
     # 后端服务基础URL（不包含 /api 路径）
+    # 用于任务进度回调、结果通知等
     BACKEND_BASE_URL = os.getenv('BACKEND_BASE_URL', 'http://localhost:8080')
 
+    # ========================================
     # YOLO模型配置
-    MODEL_PATH = os.getenv('YOLO_MODEL_PATH', 'weights/best.pt')
+    # ========================================
+    MODEL_PATH = os.getenv('YOLO_MODEL_PATH', 'weights/best.pt')  # 模型文件路径
     # MODEL_VERSION 已弃用,现在从模型检查点文件动态读取
     # MODEL_VERSION = os.getenv('YOLO_MODEL_VERSION', 'yolo11n')
-    DEVICE = os.getenv('YOLO_DEVICE', '')  # 空字符串表示自动选择
+    DEVICE = os.getenv('YOLO_DEVICE', '')  # 计算设备（''=自动选择，优先级：CUDA > MPS > CPU）
 
-    # 默认检测配置
-    DEFAULT_CONFIDENCE_THRESHOLD = float(os.getenv('DEFAULT_CONFIDENCE_THRESHOLD', '0.5'))
-    DEFAULT_IOU_THRESHOLD = float(os.getenv('DEFAULT_IOU_THRESHOLD', '0.45'))
+    # ========================================
+    # 默认检测参数
+    # ========================================
+    DEFAULT_CONFIDENCE_THRESHOLD = float(os.getenv('DEFAULT_CONFIDENCE_THRESHOLD', '0.5'))  # 置信度阈值
+    DEFAULT_IOU_THRESHOLD = float(os.getenv('DEFAULT_IOU_THRESHOLD', '0.45'))  # IoU阈值（NMS）
 
+    # ========================================
+    # 类别和事件定义
+    # ========================================
     # 类别定义（严格对应YOLO模型权重中的定义）
     # 必须与YOLO模型训练时的类别名称完全一致
     CLASS_NAMES = {
@@ -89,7 +141,10 @@ class Config:
         '侧弧': 'SIDE_ARC'                 # 别名
     }
 
+    # ========================================
     # BotSort追踪器配置
+    # ========================================
+    # 追踪器配置文件路径（YOLO内置配置）
     TRACKER_CONFIG = os.getenv('TRACKER_CONFIG', 'botsort.yaml')
 
     # BotSort详细参数（当使用自定义配置时）
@@ -108,10 +163,13 @@ class Config:
         'appearance_thresh': float(os.getenv('APPEARANCE_THRESH', '0.25')),
     }
 
-    # 进度更新频率（每处理多少帧更新一次）
+    # ========================================
+    # 分析任务配置
+    # ========================================
+    # 进度更新频率（每处理多少帧更新一次后端）
     PROGRESS_UPDATE_INTERVAL = int(os.getenv('PROGRESS_UPDATE_INTERVAL', '1'))
 
-    # 是否显示详细输出
+    # 是否显示YOLO详细输出（调试时启用）
     VERBOSE = os.getenv('YOLO_VERBOSE', 'False').lower() == 'true'
 
     # ========================================
@@ -130,18 +188,28 @@ class Config:
     # 完整路径（⚠️ 已废弃，保留用于向后兼容，请使用 get_storage_path() 方法）
     RESULT_VIDEO_PATH = os.getenv('RESULT_VIDEO_PATH', './storage/result_videos')
     PREPROCESSED_VIDEO_PATH = os.getenv('PREPROCESSED_VIDEO_PATH', './storage/preprocessed_videos')
-    
-    # RabbitMQ配置
-    RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')
-    RABBITMQ_PORT = int(os.getenv('RABBITMQ_PORT', '5672'))
-    RABBITMQ_USER = os.getenv('RABBITMQ_USER', 'var_user')
-    RABBITMQ_PASSWORD = os.getenv('RABBITMQ_PASSWORD', 'var_password')
-    
+
+    # ========================================
+    # RabbitMQ消息队列配置
+    # ========================================
+    RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')  # RabbitMQ服务器地址
+    RABBITMQ_PORT = int(os.getenv('RABBITMQ_PORT', '5672'))  # RabbitMQ端口
+    RABBITMQ_USER = os.getenv('RABBITMQ_USER', 'var_user')  # 用户名
+    RABBITMQ_PASSWORD = os.getenv('RABBITMQ_PASSWORD', 'var_password')  # 密码
+
     # 视频分析任务队列名称
     RABBITMQ_VIDEO_ANALYSIS_QUEUE = os.getenv('RABBITMQ_VIDEO_ANALYSIS_QUEUE', 'video_analysis_queue')
-    
+
+    # ========================================
+    # 内部路径常量（不建议直接使用）
+    # ========================================
     # codes/ 目录的绝对路径 (ai-processor的父目录)
+    # 推荐使用 resolve_path() 和 get_storage_path() 方法来处理路径
     CODES_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+    # ========================================
+    # 工具方法（推荐使用）
+    # ========================================
 
     @classmethod
     def get_callback_url(cls, task_id, endpoint='progress'):
