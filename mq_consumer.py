@@ -186,7 +186,8 @@ class RabbitMQConsumer:
                         import os
                         from utils.filename_utils import add_or_update_timestamp, extract_base_name
                         
-                        result_video_dir = Config.resolve_path(Config.RESULT_VIDEO_PATH)
+                        # 使用推荐的 get_storage_path() 方法获取结果视频目录
+                        result_video_dir = Config.get_storage_path(Config.STORAGE_RESULT_VIDEOS_SUBDIR)
                         os.makedirs(result_video_dir, exist_ok=True)
                         
                         # 生成输出文件名（提取基础名称，添加_result后缀和时间戳）

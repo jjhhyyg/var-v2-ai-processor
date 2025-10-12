@@ -158,9 +158,9 @@ class VideoAnalyzer:
                 logger.info(f"Task {task_id}: Starting video preprocessing (strength={preprocessing_strength}, enhance_pool={preprocessing_enhance_pool})")
                 callback.notify_preprocessing(f"正在预处理视频（强度：{preprocessing_strength}）...")
 
-                # 创建预处理视频存储目录（使用codes/storage/preprocessed_videos）
-                # 确保使用绝对路径
-                preprocessed_dir = Path(Config.resolve_path(Config.PREPROCESSED_VIDEO_PATH))
+                # 创建预处理视频存储目录
+                # 使用推荐的 get_storage_path() 方法获取绝对路径
+                preprocessed_dir = Path(Config.get_storage_path(Config.STORAGE_PREPROCESSED_VIDEOS_SUBDIR))
                 preprocessed_dir.mkdir(parents=True, exist_ok=True)
 
                 # 生成预处理后的视频文件名（提取基础名称，添加后缀，再添加时间戳）
