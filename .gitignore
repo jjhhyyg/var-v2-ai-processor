@@ -9,3 +9,4 @@ demo/
 .env
 *.log
 logs/
+logs/*
