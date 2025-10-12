@@ -1,89 +1,91 @@
-# VAR熔池视频分析系统 - AI处理模块
+# VAR Molten Pool Analysis System - AI Processing Module
 
-基于Flask + PyTorch + Ultralytics YOLO的视频分析服务。
+[简体中文](README.zh.md) | English
 
-## 功能特性
+> Video analysis service based on Flask + PyTorch + Ultralytics YOLO
 
-- ✅ YOLOv11目标检测和BotSort多目标追踪
-- ✅ 异常事件自动检测（粘连物、锭冠、辉光、边弧、爬弧等）
-- ✅ 动态参数计算（熔池闪烁频率、面积、周长）
-- ✅ 实时进度回调
-- ✅ 超时检测和预警
-- ✅ 健康检查接口
+## Features
 
-## 系统要求
+- ✅ YOLOv11 object detection and BoT-SORT multi-object tracking
+- ✅ Automatic detection of anomalous events (adhesion, ingot crown, glow, side arc, creeping arc, etc.)
+- ✅ Dynamic parameter calculation (pool flicker frequency, area, perimeter)
+- ✅ Real-time progress callbacks
+- ✅ Timeout detection and alerts
+- ✅ Health check endpoint
 
-### Python环境
+## System Requirements
+
+### Python Environment
 
 - Python 3.9+
-- Conda环境（推荐）
+- Conda environment (recommended)
 
-### 硬件要求
+### Hardware Requirements
 
-- CPU: 多核处理器
-- GPU: NVIDIA GPU（推荐，需要CUDA支持）或Apple Silicon（支持MPS）
-- 内存: 8GB+（推荐16GB+）
+- CPU: Multi-core processor
+- GPU: NVIDIA GPU (recommended, requires CUDA support) or Apple Silicon (supports MPS)
+- Memory: 8GB+ (16GB+ recommended)
 
-## 安装步骤
+## Installation
 
-### 1. 创建并激活Conda环境
+### 1. Create and Activate Conda Environment
 
 ```bash
-# 使用已配置好的pytorch环境
+# Use the pre-configured pytorch environment
 conda activate pytorch
 ```
 
-### 2. 安装依赖包
+### 2. Install Dependencies
 
 ```bash
 cd ai-processor
 pip install -r requirements.txt
 ```
 
-### 3. 配置环境变量
+### 3. Configure Environment Variables
 
 ```bash
-# 复制环境变量示例文件
+# Copy the environment variable example file
 cp .env.example .env
 
-# 编辑.env文件，修改相应配置
+# Edit the .env file and modify the configuration
 vim .env
 ```
 
-### 4. 下载YOLO模型
+### 4. Download YOLO Model
 
 ```bash
-# 模型会在首次运行时自动下载
-# 或手动下载并放置在指定路径
-# 下载地址: https://github.com/ultralytics/assets/releases
+# The model will be automatically downloaded on first run
+# Or manually download and place it in the specified path
+# Download URL: https://github.com/ultralytics/assets/releases
 ```
 
-## 使用方法
+## Usage
 
-### 启动服务
+### Start the Service
 
 ```bash
 conda activate pytorch
 python app.py
 ```
 
-服务将在 `http://localhost:5000` 启动。
+The service will start at `http://localhost:5000`.
 
-### 健康检查
+### Health Check
 
 ```bash
 curl http://localhost:5000/health
 ```
 
-### API接口
+### API Endpoints
 
-#### 1. 健康检查
+#### 1. Health Check
 
 ```text
 GET /health
 ```
 
-响应示例：
+Response example:
 
 ```json
 {
@@ -97,13 +99,13 @@ GET /health
 }
 ```
 
-#### 2. 视频分析
+#### 2. Video Analysis
 
 ```text
 POST /api/analyze
 ```
 
-请求体：
+Request body:
 
 ```json
 {
@@ -118,133 +120,130 @@ POST /api/analyze
 }
 ```
 
-响应示例：
+Response example:
 
 ```json
 {
   "status": "accepted",
   "taskId": 123,
-  "message": "任务已接受，开始处理"
+  "message": "Task accepted, processing started"
 }
 ```
 
-## 项目结构
+## Project Structure
 
 ```text
 ai-processor/
-├── analyzer/              # 核心分析模块
+├── analyzer/              # Core analysis module
 │   ├── __init__.py
-│   ├── video_processor.py    # 视频处理主逻辑
-│   ├── yolo_tracker.py       # YOLO检测和追踪
-│   ├── event_detector.py     # 事件检测
-│   └── metrics_calculator.py # 动态参数计算
-├── utils/                 # 工具模块
+│   ├── video_processor.py    # Main video processing logic
+│   ├── yolo_tracker.py       # YOLO detection and tracking
+│   ├── event_detector.py     # Event detection
+│   └── metrics_calculator.py # Dynamic parameter calculation
+├── utils/                 # Utility modules
 │   ├── __init__.py
-│   └── callback.py           # 后端回调工具
-├── app.py                 # Flask主应用
-├── config.py              # 配置文件
-├── requirements.txt       # Python依赖
-├── .env.example           # 环境变量示例
-└── README.md              # 本文档
+│   └── callback.py           # Backend callback utilities
+├── app.py                 # Flask main application
+├── config.py              # Configuration file
+├── requirements.txt       # Python dependencies
+├── .env.example           # Environment variable example
+└── README.md              # This document
 ```
 
-## 配置说明
+## Configuration
 
-### 环境变量
+### Environment Variables
 
-| 变量名 | 说明 | 默认值 |
-|--------|------|--------|
-| AI_PROCESSOR_HOST | 服务监听地址 | 0.0.0.0 |
-| AI_PROCESSOR_PORT | 服务端口 | 5000 |
-| AI_CALLBACK_URL | 后端回调URL | <http://localhost:8080/api/tasks> |
-| YOLO_MODEL_PATH | YOLO模型路径 | yolo11n.pt |
-| YOLO_DEVICE | 计算设备 | （自动选择） |
-| DEFAULT_CONFIDENCE_THRESHOLD | 默认置信度阈值 | 0.5 |
-| DEFAULT_IOU_THRESHOLD | 默认IoU阈值 | 0.45 |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| AI_PROCESSOR_HOST | Service listening address | 0.0.0.0 |
+| AI_PROCESSOR_PORT | Service port | 5000 |
+| AI_CALLBACK_URL | Backend callback URL | http://localhost:8080/api/tasks |
+| YOLO_MODEL_PATH | YOLO model path | yolo11n.pt |
+| YOLO_DEVICE | Computing device | (auto-select) |
+| DEFAULT_CONFIDENCE_THRESHOLD | Default confidence threshold | 0.5 |
+| DEFAULT_IOU_THRESHOLD | Default IoU threshold | 0.45 |
 
-### 类别定义
+### Class Definitions
 
-系统检测以下6类物体/现象：
+The system detects the following 6 classes of objects/phenomena:
 
-| ID | 类别名称 | 说明 |
-|----|---------|------|
-| 0 | 熔池未到边 | 熔池边缘尚未达到结晶器边缘 |
-| 1 | 粘连物 | 电极表面形成的黑色不规则粘连物 |
-| 2 | 锭冠 | 结晶器边缘的锭冠 |
-| 3 | 辉光 | 电极环缝区域气体异常放电现象 |
-| 4 | 边弧（侧弧） | 电弧持续出现在电极边缘 |
-| 5 | 爬弧 | 电极表面出现的电弧迹线 |
+| ID | Class Name | Description |
+|----|-----------|-------------|
+| 0 | Pool Not to Edge | Pool edge has not reached crystallizer edge |
+| 1 | Adhesion | Black irregular adhesion on electrode surface |
+| 2 | Ingot Crown | Ingot crown at crystallizer edge |
+| 3 | Glow | Abnormal gas discharge in electrode ring gap area |
+| 4 | Side Arc | Arc continuously appears at electrode edge |
+| 5 | Creeping Arc | Arc traces on electrode surface |
 
-## 事件推断逻辑
+## Event Inference Logic
 
-### 1. 粘连物相关事件
+### 1. Adhesion-Related Events
 
-- **电极形成粘连物**：粘连物首次被检测到
-- **电极粘连物脱落**：粘连物轨迹消失，根据消失位置判断落入熔池还是被结晶器捕获
+- **Electrode Adhesion Formation**: First detection of adhesion
+- **Electrode Adhesion Detachment**: Adhesion trajectory disappears, judged to fall into pool or be captured by crystallizer based on disappearance position
 
-### 2. 锭冠相关事件
+### 2. Ingot Crown-Related Events
 
-- **锭冠脱落**：锭冠从结晶器边缘运动至熔池
+- **Ingot Crown Detachment**: Ingot crown moves from crystallizer edge to pool
 
-### 3. 电弧异常事件
+### 3. Arc Anomaly Events
 
-- **辉光、边弧、爬弧**：持续事件，记录起始和结束帧
+- **Glow, Side Arc, Creeping Arc**: Continuous events, recording start and end frames
 
-## 开发说明
+## Development Notes
 
-### 动态参数计算
+### Dynamic Parameter Calculation
 
-当前版本的动态参数计算使用假数据模拟。如需实现真实算法，请参考 `analyzer/metrics_calculator.py` 中的 `RealMetricsCalculator` 类。
+The current version uses simulated data for dynamic parameter calculation. To implement real algorithms, refer to the `RealMetricsCalculator` class in `analyzer/metrics_calculator.py`.
 
-实现思路：
+Implementation approach:
 
-1. **闪烁频率**：使用FFT分析亮度时域信号
-2. **熔池面积**：图像分割 + 像素计数
-3. **熔池周长**：边缘检测 + 周长计算
+1. **Flicker Frequency**: Use FFT to analyze brightness time-domain signals
+2. **Pool Area**: Image segmentation + pixel counting
+3. **Pool Perimeter**: Edge detection + perimeter calculation
 
-### 模型训练
+### Model Training
 
-如需训练自定义YOLO模型：
+To train a custom YOLO model:
 
 ```bash
-# 使用Ultralytics训练
+# Train using Ultralytics
 yolo train data=var_dataset.yaml model=yolo11n.pt epochs=100 imgsz=640
 ```
 
-## 故障排查
+## Troubleshooting
 
-### GPU不可用
+### GPU Not Available
 
-检查CUDA安装：
+Check CUDA installation:
 
 ```bash
 python -c "import torch; print(torch.cuda.is_available())"
 ```
 
-### 内存不足
+### Out of Memory
 
-降低batch size或使用更小的模型（如yolo11n.pt）。
+Reduce batch size or use a smaller model (e.g., yolo11n.pt).
 
-### 模型加载失败
+### Model Loading Failed
 
-确保模型文件存在且路径正确：
+Ensure the model file exists and the path is correct:
 
 ```bash
 ls -lh yolo11n.pt
 ```
 
-## 性能优化建议
+## Performance Optimization Tips
 
-1. **使用GPU加速**：设置 `YOLO_DEVICE=cuda` 或 `YOLO_DEVICE=0`
-2. **降低进度更新频率**：修改 `PROGRESS_UPDATE_INTERVAL`
-3. **使用更小的模型**：如 `yolo11n.pt` 替代 `yolo11x.pt`
-4. **降低视频分辨率**：预处理时缩放视频
+1. **Use GPU Acceleration**: Set `YOLO_DEVICE=cuda` or `YOLO_DEVICE=0`
+2. **Reduce Progress Update Frequency**: Modify `PROGRESS_UPDATE_INTERVAL`
+3. **Use Smaller Models**: e.g., `yolo11n.pt` instead of `yolo11x.pt`
+4. **Reduce Video Resolution**: Scale videos during preprocessing
 
-## 许可证
+## License
 
-Apache 2.0
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0) - see the [LICENSE](LICENSE) file for details.
 
-## 联系方式
-
-- 开发者：侯阳洋
-- 项目：VAR熔池视频分析系统
+**Important:** Any modified version of this software used over a network must make the source code available to users.
