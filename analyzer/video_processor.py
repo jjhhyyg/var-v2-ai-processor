@@ -117,7 +117,8 @@ class VideoAnalyzer:
                           preprocessing_enhance_pool: bool = True,
                           enable_tracking_merge: bool = True,
                           tracking_merge_strategy: str = 'auto',
-                          callback_url: Optional[str] = None) -> tuple[str, str]:
+                          callback_url: Optional[str] = None,
+                          frame_rate: float = 25.0) -> tuple[str, str]:
         """
         分析视频任务（主处理函数）
 
@@ -131,7 +132,10 @@ class VideoAnalyzer:
             enable_preprocessing: 是否启用视频预处理
             preprocessing_strength: 预处理强度（mild/moderate/strong）
             preprocessing_enhance_pool: 是否启用熔池增强
+            enable_tracking_merge: 是否启用追踪轨迹合并
+            tracking_merge_strategy: 追踪合并策略
             callback_url: 回调URL（可选，从MQ消息中获取）
+            frame_rate: 视频帧率（从后端TaskConfig获取，由FFmpeg解析）
 
         Returns:
             tuple[str, str]: (任务状态, 实际分析的视频路径)
@@ -186,6 +190,7 @@ class VideoAnalyzer:
                 self.preprocessor.process_video(
                     input_path=Config.resolve_path(video_path),
                     output_path=preprocessed_video_path,
+                    frame_rate=frame_rate,  # 传递从后端获取的帧率
                     strength=preprocessing_strength,
                     enhance_pool=preprocessing_enhance_pool,
                     progress_callback=preprocessing_progress_callback
@@ -238,11 +243,12 @@ class VideoAnalyzer:
 
             # 获取视频信息
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
+            # 使用从后端传递的帧率，而不是从视频文件读取
+            fps = frame_rate
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-            logger.info(f"Task {task_id}: Video info - {total_frames} frames, {fps} fps, {width}x{height}")
+            logger.info(f"Task {task_id}: Video info - {total_frames} frames, {fps} fps (from backend config), {width}x{height}")
 
             preprocessing_duration = int(time.time() - preprocessing_start)
 
@@ -521,7 +527,8 @@ class VideoAnalyzer:
                                output_path: str,
                                confidence_threshold: float = 0.5,
                                iou_threshold: float = 0.45,
-                               callback_url: Optional[str] = None) -> bool:
+                               callback_url: Optional[str] = None,
+                               frame_rate: float = 25.0) -> bool:
         """
         导出带标注的视频（包含bbox、标签和ID）
 
@@ -532,6 +539,7 @@ class VideoAnalyzer:
             confidence_threshold: 置信度阈值（此参数已不使用，保留用于兼容）
             iou_threshold: IoU阈值（此参数已不使用，保留用于兼容）
             callback_url: 回调URL（可选）
+            frame_rate: 视频帧率（从后端TaskConfig获取，由FFmpeg解析）
 
         Returns:
             是否成功导出
@@ -561,7 +569,8 @@ class VideoAnalyzer:
 
             # 获取视频信息
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
+            # 使用从后端传递的帧率，而不是从视频文件读取
+            fps = frame_rate
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             
@@ -569,7 +578,7 @@ class VideoAnalyzer:
             if len(all_detections) != total_frames:
                 logger.warning(f"Task {task_id}: Frame count mismatch - video has {total_frames} frames, but tracking results have {len(all_detections)} frames")
 
-            logger.info(f"Task {task_id}: Exporting video - {total_frames} frames, {fps} fps, {width}x{height}")
+            logger.info(f"Task {task_id}: Exporting video - {total_frames} frames, {fps} fps (from backend config), {width}x{height}")
             
             # 估算输出文件大小
             estimate_size_mb = self.storage_manager.estimate_video_size(

@@ -117,6 +117,10 @@ class RabbitMQConsumer:
             enable_tracking_merge = config.get('enableTrackingMerge', True)
             tracking_merge_strategy = config.get('trackingMergeStrategy', 'auto')
 
+            # 从后端配置中获取视频帧率（由FFmpeg解析得到）
+            frame_rate = config.get('frameRate', 25.0)
+            logger.info(f"Task {task_id}: Using frame rate from backend config: {frame_rate} fps")
+
             # 定义处理任务的函数
             def process_task():
                 # 检查是否需要关闭
@@ -168,7 +172,8 @@ class RabbitMQConsumer:
                         confidence_threshold, iou_threshold,
                         enable_preprocessing, preprocessing_strength, preprocessing_enhance_pool,
                         enable_tracking_merge, tracking_merge_strategy,
-                        callback_url
+                        callback_url,
+                        frame_rate  # 传递从后端获取的帧率
                     )
                     
                     logger.info(f"Task {task_id}: Analysis finished with status: {analysis_status}")
@@ -199,7 +204,8 @@ class RabbitMQConsumer:
                         logger.info(f"Task {task_id}: Using analyzed video: {analyzed_video_path}")
                         success = task_analyzer.export_annotated_video(
                             task_id, analyzed_video_path, output_path,
-                            confidence_threshold, iou_threshold, callback_url
+                            confidence_threshold, iou_threshold, callback_url,
+                            frame_rate  # 传递帧率
                         )
                         
                         if success:

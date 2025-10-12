@@ -44,6 +44,7 @@ class OptimizedVideoPreprocessor:
         self.storage_manager = VideoStorageManager()
 
     def process_video(self, input_path: str, output_path: str,
+                     frame_rate: float = 25.0,
                      strength: str = 'moderate', enhance_pool: bool = True,
                      progress_callback: Optional[Callable[[int, int, float], None]] = None):
         """
@@ -51,6 +52,7 @@ class OptimizedVideoPreprocessor:
 
         :param input_path: str, 输入视频文件的路径。
         :param output_path: str, 处理后输出视频文件的路径。
+        :param frame_rate: float, 视频帧率（从后端TaskConfig获取，由FFmpeg解析）
         :param strength: str, 预处理强度。可选值为 'mild'(轻度), 'moderate'(中度), 'strong'(强度)。
                          不同强度对应不同的去噪和增强参数。
         :param enhance_pool: bool, 是否启用针对熔池的特定增强算法。
@@ -63,7 +65,8 @@ class OptimizedVideoPreprocessor:
             raise ValueError(f"无法打开视频文件: {input_path}")
 
         # --- 步骤 2: 获取视频基本属性 ---
-        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        # 使用传入的 frame_rate 而不是从视频文件读取
+        fps = int(frame_rate)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
