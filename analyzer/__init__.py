@@ -1,13 +1,13 @@
 from .video_processor import VideoAnalyzer
 from .yolo_tracker import YOLOTracker
-from .event_detector import EventDetector
+from .trajectory_recorder import TrajectoryRecorder
 from .metrics_calculator import MetricsCalculator
 from .anomaly_event_generator import AnomalyEventGenerator
 
 __all__ = [
     'VideoAnalyzer',
-    'YOLOTracker', 
-    'EventDetector',
+    'YOLOTracker',
+    'TrajectoryRecorder',
     'MetricsCalculator',
     'AnomalyEventGenerator'
 ]

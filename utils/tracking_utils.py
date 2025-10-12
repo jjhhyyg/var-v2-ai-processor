@@ -39,7 +39,7 @@ def merge_tracking_objects(
     scenario_params = {
         "default": {
             "max_frame_gap": 15,
-            "max_distance": 100.0,
+            "max_distance": 30,
             "association_threshold": 0.5
         },
         "adhesion_falling": {
@@ -71,7 +71,17 @@ def merge_tracking_objects(
     
     params = scenario_params.get(scenario, scenario_params["default"])
     
+    logger.info(f"=== 轨迹合并开始 ===")
     logger.info(f"使用场景: {scenario}, 参数: {params}")
+    logger.info(f"输入对象数量: {len(tracking_objects)}")
+    
+    # 打印输入对象的简要信息
+    if tracking_objects:
+        logger.info(f"输入对象示例（前3个）:")
+        for i, obj in enumerate(tracking_objects[:3]):
+            logger.info(f"  对象{i+1}: objectId={obj.get('objectId')}, category={obj.get('category')}, "
+                       f"帧范围={obj.get('firstFrame')}-{obj.get('lastFrame')}, "
+                       f"轨迹点数={len(obj.get('trajectory', []))}")
     
     unified_objects, report = process_tracking_objects(
         tracking_objects,
@@ -82,6 +92,16 @@ def merge_tracking_objects(
         f"合并完成: 原始{len(tracking_objects)}个 -> "
         f"统一{len(unified_objects)}个 (合并率: {report['merge_rate']})"
     )
+    logger.info(f"合并组数: {report['total_merge_groups']}, 单独对象: {report['single_objects']}")
+    
+    # 打印合并详情
+    if report['merge_details']:
+        logger.info(f"合并详情:")
+        for detail in report['merge_details']:
+            logger.info(f"  合并组{detail['group_id']}: {detail['original_ids']} -> ID {detail['unified_id']}, "
+                       f"类别={detail['category']}, 帧范围={detail['frame_range']}")
+    
+    logger.info(f"=== 轨迹合并结束 ===")
     
     return unified_objects, report
 

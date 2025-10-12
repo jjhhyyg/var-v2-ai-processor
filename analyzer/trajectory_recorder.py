@@ -1,6 +1,13 @@
 """
-物体追踪记录模块
-基于ByteTrack追踪结果记录各种物体的出现和消失
+物体轨迹记录模块
+基于BoT-SORT追踪结果记录各种物体的生命周期和运动轨迹
+
+功能：
+- 管理物体的生命周期（出现、持续、消失、重新出现）
+- 记录物体的完整运动轨迹（帧号、边界框、置信度）
+- 为后续的轨迹合并和异常事件生成提供基础数据
+
+作者：侯阳洋
 """
 import logging
 from typing import Dict, List, Any
@@ -9,11 +16,20 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 
-class EventDetector:
-    """物体追踪记录器（简化版本，只记录物体，不生成事件）"""
+class TrajectoryRecorder:
+    """
+    物体轨迹记录器
+
+    职责：
+    - 聚合逐帧检测结果为结构化的物体生命周期数据
+    - 管理物体的活跃状态和完成状态
+    - 记录完整的运动轨迹，为后续分析提供数据基础
+
+    注意：本类不生成异常事件，事件生成由 AnomalyEventGenerator 负责
+    """
 
     def __init__(self):
-        """初始化追踪记录器"""
+        """初始化轨迹记录器"""
         # 追踪物体状态管理
         self.active_tracks = {}  # {track_id: track_info}
         self.completed_tracks = {}  # {track_id: track_info}
@@ -114,12 +130,11 @@ class EventDetector:
         # 不再生成事件，返回空列表
         return []
 
-    def finalize_events(self) -> List[Dict[str, Any]]:
+    def finalize_tracking(self) -> None:
         """
-        完成追踪，处理视频结束时仍在活跃的追踪
+        完成轨迹记录，处理视频结束时仍在活跃的追踪
 
-        Returns:
-            空列表（不再生成事件）
+        将所有活跃的追踪对象标记为已完成，用于视频分析结束时的清理工作
         """
         # 将所有仍在活跃的追踪移到已完成追踪
         for track_id, track_info in list(self.active_tracks.items()):
@@ -128,9 +143,6 @@ class EventDetector:
             self.completed_tracks[track_id] = track_info
 
         self.active_tracks.clear()
-
-        # 不再生成事件，返回空列表
-        return []
 
     def get_tracking_objects(self) -> List[Dict[str, Any]]:
         """
@@ -161,6 +173,7 @@ class EventDetector:
             
             # 记录所有检测到的物体（不再只记录粘连物和锭冠）
             tracking_obj = {
+                'trackingId': str(track_id),  # 在AI处理阶段，trackingId等于objectId（数据库ID会在保存时重新生成）
                 'objectId': track_id,
                 'category': category,  # 后端需要的英文类别
                 'className': class_name,  # 中文类别名称

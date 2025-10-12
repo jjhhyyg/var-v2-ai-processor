@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 from PIL import Image, ImageDraw, ImageFont
 from .yolo_tracker import YOLOTracker
-from .event_detector import EventDetector
+from .trajectory_recorder import TrajectoryRecorder
 from .metrics_calculator import MetricsCalculator
 from .anomaly_event_generator import AnomalyEventGenerator
 from utils.callback import BackendCallback
@@ -94,7 +94,7 @@ class VideoAnalyzer:
 
         # 初始化各个组件
         self.yolo_tracker = YOLOTracker(model_path, self.device)
-        self.event_detector = EventDetector()
+        self.trajectory_recorder = TrajectoryRecorder()
         self.metrics_calculator = MetricsCalculator()
 
         # 资源管理标志
@@ -255,7 +255,7 @@ class VideoAnalyzer:
 
             # 重置组件
             self.yolo_tracker.reset_tracking()
-            self.event_detector = EventDetector()
+            self.trajectory_recorder = TrajectoryRecorder()
             self.metrics_calculator.reset()
 
             # 逐帧处理
@@ -278,8 +278,8 @@ class VideoAnalyzer:
                 # 保存当前帧的检测结果
                 all_detections.append(detections)
 
-                # 2. 事件检测
-                self.event_detector.process_detections(frame_count, timestamp, detections)
+                # 2. 轨迹记录
+                self.trajectory_recorder.process_detections(frame_count, timestamp, detections)
 
                 # 3. 计算动态参数
                 metrics = self.metrics_calculator.calculate_metrics(
@@ -326,28 +326,15 @@ class VideoAnalyzer:
             global_analysis = self.metrics_calculator.analyze_all(fps)
             logger.info(f"Task {task_id}: Global analysis completed: {global_analysis}")
 
-            # 获取追踪物体信息（不再生成异常事件）
-            final_events = self.event_detector.finalize_events()  # 返回空列表
-            tracking_objects = self.event_detector.get_tracking_objects()
+            # 完成轨迹记录，获取所有追踪物体
+            self.trajectory_recorder.finalize_tracking()
+            tracking_objects = self.trajectory_recorder.get_tracking_objects()
 
-            # ✨ 生成基于轨迹的异常事件
-            logger.info(f"Task {task_id}: Generating anomaly events from tracking objects")
-            anomaly_generator = AnomalyEventGenerator(fps=fps, video_path=final_video_path)
-            
-            # 从视频路径中提取文件名
-            video_filename = os.path.basename(final_video_path if final_video_path else video_path)
-            
-            # 生成异常事件
-            anomaly_events = anomaly_generator.generate_events(
-                tracking_objects=tracking_objects,
-                video_filename=video_filename,
-                total_frames=total_frames
-            )
-            logger.info(f"Task {task_id}: Generated {len(anomaly_events)} anomaly events")
-
-            # ✨ 应用追踪轨迹合并算法（如果启用）
+            # ✨ 应用追踪轨迹合并算法(如果启用)
+            logger.info(f"Task {task_id}: Tracking merge enabled: {enable_tracking_merge}, Tracking objects count: {len(tracking_objects)}")
             if enable_tracking_merge and len(tracking_objects) > 0:
                 logger.info(f"Task {task_id}: Applying tracking merge algorithm with strategy '{tracking_merge_strategy}'")
+                logger.info(f"Task {task_id}: Original tracking objects: {len(tracking_objects)}")
                 try:
                     from utils.tracking_utils import smart_merge
                     
@@ -374,8 +361,32 @@ class VideoAnalyzer:
                     tracking_objects = unified_objects
                     logger.info(f"Task {task_id}: Merge completed - {merge_report['total_original_objects']} → {merge_report['total_unified_objects']} objects ({merge_report['merge_rate']})")
                     logger.info(f"Task {task_id}: Merged {merge_report['total_merge_groups']} groups")
+                    if merge_report['merge_details']:
+                        logger.info(f"Task {task_id}: Merge details: {merge_report['merge_details']}")
                 except Exception as e:
-                    logger.error(f"Task {task_id}: Failed to apply tracking merge: {e}, using original tracking objects")
+                    logger.error(f"Task {task_id}: Failed to apply tracking merge: {e}, using original tracking objects", exc_info=True)
+            else:
+                logger.info(f"Task {task_id}: Tracking merge skipped (enabled={enable_tracking_merge}, objects={len(tracking_objects)})")
+
+            # ✨ 生成基于轨迹的异常事件(在轨迹合并之后)
+            logger.info(f"Task {task_id}: Generating anomaly events from tracking objects")
+            anomaly_generator = AnomalyEventGenerator(
+                fps=fps,
+                video_path=final_video_path,
+                debug_mode=Config.DEBUG  # 从配置读取调试模式开关
+            )
+            
+            # 从视频路径中提取文件名
+            video_filename = os.path.basename(final_video_path if final_video_path else video_path)
+            
+            # 生成异常事件
+            anomaly_events = anomaly_generator.generate_events(
+                tracking_objects=tracking_objects,
+                video_filename=video_filename,
+                total_frames=total_frames
+            )
+            logger.info(f"Task {task_id}: Generated {len(anomaly_events)} anomaly events")
+
 
             # 保存检测结果到文件,供生成结果视频时使用（使用原子写入）
             tracking_results_dir = Path(Config.get_storage_path('tracking_results'))
@@ -463,11 +474,11 @@ class VideoAnalyzer:
                     # 将模型移到CPU并清理GPU缓存
                     try:
                         self.yolo_tracker.model.to('cpu')
-                        if self.device.type == 'cuda':
+                        if self.device == 'cuda':
                             import torch
                             torch.cuda.empty_cache()
                             logger.debug("CUDA cache cleared")
-                        elif self.device.type == 'mps':
+                        elif self.device == 'mps':
                             import torch
                             if hasattr(torch.mps, 'empty_cache'):
                                 torch.mps.empty_cache()

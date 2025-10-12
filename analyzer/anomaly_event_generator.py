@@ -24,13 +24,14 @@ logger = logging.getLogger(__name__)
 class AnomalyEventGenerator:
     """异常事件生成器"""
 
-    def __init__(self, fps: float = 30.0, video_path: Optional[str] = None):
+    def __init__(self, fps: float = 30.0, video_path: Optional[str] = None, debug_mode: bool = False):
         """
         初始化异常事件生成器
-        
+
         Args:
             fps: 视频帧率（用于计算时间窗口）
             video_path: 视频文件路径（用于读取帧进行图像分析）
+            debug_mode: 调试模式，启用时会保存中间处理结果到 debug_output 目录
         """
         self.fps = fps
         self.time_window_frames = int(5 * fps)  # 5秒对应的帧数（用于其他事件）
@@ -38,11 +39,20 @@ class AnomalyEventGenerator:
         self.video_path = video_path
         self.frame_cache = {}  # 缓存读取的帧，避免重复IO
         self.video_cap = None  # VideoCapture对象
-        
+        self.debug_mode = debug_mode  # 调试模式开关
+        self.debug_output_dir = None  # 调试输出目录
+
+        # 如果启用调试模式，创建调试输出目录
+        if self.debug_mode and self.video_path:
+            video_name = Path(self.video_path).stem
+            self.debug_output_dir = Path(self.video_path).parent / 'debug_output' / video_name
+            self.debug_output_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Debug mode enabled, output dir: {self.debug_output_dir}")
+
         logger.info(f"AnomalyEventGenerator initialized with fps={fps}, "
                    f"time_window={self.time_window_frames} frames, "
                    f"event_window={self.event_window_frames} frames, "
-                   f"video_path={video_path}")
+                   f"video_path={video_path}, debug_mode={debug_mode}")
 
     def generate_events(self, 
                        tracking_objects: List[Dict[str, Any]], 
@@ -50,12 +60,12 @@ class AnomalyEventGenerator:
                        total_frames: int) -> List[Dict[str, Any]]:
         """
         基于追踪物体生成异常事件
-        
+
         Args:
-            tracking_objects: 追踪物体列表（来自 EventDetector.get_tracking_objects()）
+            tracking_objects: 追踪物体列表（来自 TrajectoryRecorder.get_tracking_objects()）
             video_filename: 视频文件名（用于判断左/右视角）
             total_frames: 视频总帧数
-        
+
         Returns:
             异常事件列表，每个事件包含：
             - eventType: 事件类型（对应后端 EventType 枚举）
@@ -386,9 +396,11 @@ class AnomalyEventGenerator:
         分析粘连物的脱落位置
         
         判断逻辑优先级：
-        1. 使用连通域分析判断最后一帧是否与电极断开（被熔池包围）→ 'pool'
+        1. 使用连通域分析判断最后几帧是否与电极断开（被熔池包围）→ 'pool'
         2. 检查粘连物存在前的最后一帧，向前10帧是否有明显运动且不在熔池中 → 'crystallizer'
         3. 使用原有的方向判断作为fallback
+        
+        改进：检查最后3-5帧的稳定性，避免单帧误判
         
         Args:
             adhesion_obj: 粘连物对象
@@ -408,13 +420,28 @@ class AnomalyEventGenerator:
         last_trajectory = trajectory[-1]
         last_bbox = last_trajectory.get('bbox', [])
         
-        # 策略1: 检查最后一帧是否被熔池包围（与电极断开连接）
-        frame = self._read_frame(last_frame_num)
-        if frame is not None and last_bbox:
-            is_in_pool = self._is_surrounded_by_pool(frame, last_bbox, last_frame_num)
-            if is_in_pool:
-                logger.debug(f"Frame {last_frame_num}: Object is surrounded by pool (disconnected from electrode)")
-                return 'pool'
+        # 策略1: 检查最后几帧是否被熔池包围（与电极断开连接）
+        # 改进：检查最后3-5帧，避免单帧误判
+        frames_to_check = min(5, len(trajectory))
+        pool_count = 0
+        
+        for i in range(1, frames_to_check + 1):
+            traj_point = trajectory[-i]
+            frame_num = traj_point['frame']
+            bbox_to_check = traj_point.get('bbox', [])
+            
+            if bbox_to_check:
+                frame = self._read_frame(frame_num)
+                if frame is not None:
+                    is_in_pool = self._is_surrounded_by_pool(frame, bbox_to_check, frame_num)
+                    if is_in_pool:
+                        pool_count += 1
+        
+        # 如果最后几帧中大部分都在熔池中（至少60%），判定为脱落到熔池
+        pool_ratio = pool_count / frames_to_check
+        if pool_ratio >= 0.6:
+            logger.debug(f"Last {frames_to_check} frames: {pool_count} in pool ({pool_ratio:.1%}), dropped to pool")
+            return 'pool'
         
         # 策略2: 检查是否被结晶器捕获
         # 粘连物存在前的最后一帧，检查前10帧的运动情况
@@ -531,7 +558,8 @@ class AnomalyEventGenerator:
         1. 从bbox中心点开始，找到该点所在的连通域
         2. 计算该连通域的bbox与输入bbox的IoU重合度
         3. 判断该连通域是否与电极连通域相同
-        4. 只有当IoU高且不是电极连通域时，才判定为在熔池中
+        4. 检查粘连物bbox周围的连接情况（多点采样）
+        5. 只有当多个条件同时满足时，才判定为在熔池中
         
         Args:
             frame: 原始帧图像
@@ -545,8 +573,8 @@ class AnomalyEventGenerator:
         if frame is None or not bbox or len(bbox) < 4:
             return False
         
-        # IoU阈值：连通域bbox与输入bbox的重合度阈值
-        IOU_THRESHOLD = 0.3
+        # IoU阈值：提高到0.5，更严格判断
+        IOU_THRESHOLD = 0.5
         
         try:
             # 1. 转灰度图
@@ -555,17 +583,24 @@ class AnomalyEventGenerator:
             
             # 2. 高斯模糊去噪
             blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-            
+
             # 3. 二值化：使用Otsu自适应阈值
             # 暗色(0) = 电极及粘连物，亮色(255) = 熔池
             _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            
+
             # 反转：让暗色区域为255（前景），亮色为0（背景）
             binary_inv = cv2.bitwise_not(binary)
-            
-            # 4. 形态学操作：闭运算连接断裂的暗色区域
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-            closed = cv2.morphologyEx(binary_inv, cv2.MORPH_CLOSE, kernel)
+
+            # 4. 形态学操作：渐进式多尺度闭运算
+            # 目的：连接粘连物与电极之间的细微连接（可能只有几个像素宽）
+            kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+
+            # 三次渐进闭运算：小→中→大
+            closed = cv2.morphologyEx(binary_inv, cv2.MORPH_CLOSE, kernel_small)
+            closed = cv2.morphologyEx(closed, cv2.MORPH_CLOSE, kernel_medium)
+            closed = cv2.morphologyEx(closed, cv2.MORPH_CLOSE, kernel_large)
             
             # 5. 找连通域
             num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(closed, connectivity=8)
@@ -595,7 +630,7 @@ class AnomalyEventGenerator:
                 logger.debug(f"Frame {frame_number}: Cannot find electrode region")
                 return False
             
-            # 7. 获取bbox中心点，找到该点所在的连通域
+            # 7. 获取bbox中心点和边界点，多点采样判断连接情况
             x1, y1, x2, y2 = map(int, bbox)
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
@@ -603,9 +638,35 @@ class AnomalyEventGenerator:
             bbox_center_x = (x1 + x2) // 2
             bbox_center_y = (y1 + y2) // 2
             
+            # 多点采样：中心点 + bbox底部中心点 + bbox四个角的内缩点
+            sample_points = [
+                (bbox_center_x, bbox_center_y),  # 中心点
+                (bbox_center_x, min(y2 - 2, bbox_center_y + (y2 - y1) // 4)),  # 下部中心点（粘连物通常从底部连接电极）
+                (x1 + 3, y1 + 3),  # 左上角内缩
+                (x2 - 3, y1 + 3),  # 右上角内缩
+                (x1 + 3, y2 - 3),  # 左下角内缩
+                (x2 - 3, y2 - 3),  # 右下角内缩
+            ]
+            
+            # 确保采样点在图像范围内
+            valid_sample_points = [
+                (x, y) for x, y in sample_points
+                if 0 <= x < w and 0 <= y < h
+            ]
+            
+            # 统计各采样点的连通域标签
+            object_labels = [labels[y, x] for x, y in valid_sample_points]
+            
+            # 如果大部分采样点都在背景上（亮色熔池区域），说明已经脱落到熔池
+            background_count = sum(1 for label in object_labels if label == 0)
+            if background_count >= len(object_labels) * 0.5:  # 50%以上的点在背景上
+                logger.debug(f"Frame {frame_number}: Object has {background_count}/{len(object_labels)} points in background (pool)")
+                return True
+            
+            # 使用中心点的标签作为主要判断
             object_label = labels[bbox_center_y, bbox_center_x]
             
-            # 如果中心点在背景上（亮色熔池区域），说明已经脱落到熔池
+            # 如果中心点在背景上，也判定为在熔池中
             if object_label == 0:
                 logger.debug(f"Frame {frame_number}: Object center is in background (pool)")
                 return True
@@ -621,18 +682,42 @@ class AnomalyEventGenerator:
             # 10. 判断是否与电极连通域相同
             is_same_as_electrode = (object_label == electrode_label)
             
-            # 11. 综合判断
-            # 如果IoU很高且不是电极连通域 -> 在熔池中（物体已脱落）
-            # 如果IoU很低或者是电极连通域 -> 还在电极上
-            is_in_pool = (iou >= IOU_THRESHOLD) and (not is_same_as_electrode)
+            # 检查采样点中是否有多个点与电极连接
+            electrode_connected_count = sum(1 for label in object_labels if label == electrode_label and label > 0)
+            has_strong_electrode_connection = electrode_connected_count >= 2  # 至少2个点连接到电极
             
+            # 11. 综合判断（更严格的条件）
+            # 条件1: IoU要足够高，说明连通域准确覆盖了物体
+            # 条件2: 物体不能与电极在同一连通域
+            # 条件3: 物体不能有多个采样点与电极连接
+            is_in_pool = (iou >= IOU_THRESHOLD) and (not is_same_as_electrode) and (not has_strong_electrode_connection)
+
             if is_in_pool:
                 logger.debug(f"Frame {frame_number}: Object is SEPARATED from electrode "
-                           f"(IoU={iou:.3f}, is_electrode={is_same_as_electrode})")
+                           f"(IoU={iou:.3f}, is_electrode={is_same_as_electrode}, electrode_connections={electrode_connected_count})")
             else:
                 logger.debug(f"Frame {frame_number}: Object is CONNECTED to electrode "
-                           f"(IoU={iou:.3f}, is_electrode={is_same_as_electrode})")
-            
+                           f"(IoU={iou:.3f}, is_electrode={is_same_as_electrode}, electrode_connections={electrode_connected_count})")
+
+            # 12. 调试模式：保存中间处理结果
+            if self.debug_mode and self.debug_output_dir:
+                self._save_debug_images(
+                    frame_number=frame_number,
+                    original=frame,
+                    gray=gray,
+                    blurred=blurred,
+                    binary=binary,
+                    binary_inv=binary_inv,
+                    closed=closed,
+                    labels=labels,
+                    bbox=bbox,
+                    electrode_label=electrode_label,
+                    object_label=object_label,
+                    is_in_pool=is_in_pool,
+                    iou=iou,
+                    electrode_connections=electrode_connected_count
+                )
+
             return is_in_pool
             
         except Exception as e:
@@ -752,11 +837,114 @@ class AnomalyEventGenerator:
             logger.error(f"Error reading frame {frame_number}: {e}")
             return None
 
+    def _save_debug_images(self, frame_number: int, original: np.ndarray,
+                           gray: np.ndarray, blurred: np.ndarray,
+                           binary: np.ndarray, binary_inv: np.ndarray,
+                           closed: np.ndarray, labels: np.ndarray,
+                           bbox: List[float], electrode_label: int,
+                           object_label: int, is_in_pool: bool,
+                           iou: float, electrode_connections: int):
+        """
+        保存调试图像，用于可视化连通域分析的中间步骤
+
+        Args:
+            frame_number: 帧号
+            original: 原始彩色帧
+            gray: 灰度图
+            blurred: 模糊后的图
+            binary: 二值化图
+            binary_inv: 反转后的二值化图
+            closed: 闭运算后的图
+            labels: 连通域标签矩阵
+            bbox: 物体边界框
+            electrode_label: 电极连通域标签
+            object_label: 物体连通域标签
+            is_in_pool: 判断结果
+            iou: IoU值
+            electrode_connections: 与电极连接的采样点数量
+        """
+        try:
+            # 创建帧专用输出目录
+            frame_dir = self.debug_output_dir / f"frame_{frame_number:06d}"
+            frame_dir.mkdir(exist_ok=True)
+
+            # 1. 保存原图+bbox标注
+            original_annotated = original.copy()
+            x1, y1, x2, y2 = map(int, bbox)
+            color = (0, 255, 0) if is_in_pool else (0, 0, 255)  # 绿色=在熔池，红色=连接电极
+            cv2.rectangle(original_annotated, (x1, y1), (x2, y2), color, 2)
+
+            # 添加文本标注
+            status_text = f"IN_POOL" if is_in_pool else f"CONNECTED"
+            info_text = f"IoU={iou:.2f} EC={electrode_connections}"
+            cv2.putText(original_annotated, status_text, (x1, y1 - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            cv2.putText(original_annotated, info_text, (x1, y1 - 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+            cv2.imwrite(str(frame_dir / "01_original_annotated.jpg"), original_annotated)
+
+            # 2. 保存灰度图
+            cv2.imwrite(str(frame_dir / "02_gray.jpg"), gray)
+
+            # 3. 保存模糊图
+            cv2.imwrite(str(frame_dir / "03_blurred.jpg"), blurred)
+
+            # 4. 保存二值化图
+            cv2.imwrite(str(frame_dir / "04_binary.jpg"), binary)
+
+            # 5. 保存反转图
+            cv2.imwrite(str(frame_dir / "05_binary_inv.jpg"), binary_inv)
+
+            # 6. 保存闭运算结果
+            cv2.imwrite(str(frame_dir / "06_closed.jpg"), closed)
+
+            # 7. 生成连通域可视化图
+            # 为每个连通域分配不同的颜色
+            label_hue = np.uint8(179 * labels / np.max(labels)) if np.max(labels) > 0 else np.zeros_like(labels, dtype=np.uint8)
+            blank_ch = 255 * np.ones_like(label_hue)
+            labeled_img = cv2.merge([label_hue, blank_ch, blank_ch])
+            labeled_img = cv2.cvtColor(labeled_img, cv2.COLOR_HSV2BGR)
+
+            # 标记电极连通域（蓝色边框）
+            electrode_mask = (labels == electrode_label).astype(np.uint8) * 255
+            electrode_contours, _ = cv2.findContours(electrode_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(labeled_img, electrode_contours, -1, (255, 0, 0), 2)  # 蓝色=电极
+
+            # 标记物体连通域（绿色/红色边框）
+            if object_label > 0:
+                object_mask = (labels == object_label).astype(np.uint8) * 255
+                object_contours, _ = cv2.findContours(object_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(labeled_img, object_contours, -1, color, 2)
+
+            # 标记bbox
+            cv2.rectangle(labeled_img, (x1, y1), (x2, y2), color, 2)
+
+            cv2.imwrite(str(frame_dir / "07_connected_components.jpg"), labeled_img)
+
+            # 8. 保存判断结果文本
+            result_text = f"""Frame {frame_number} Analysis Result
+====================================
+Status: {"IN POOL (Separated)" if is_in_pool else "CONNECTED to Electrode"}
+IoU: {iou:.3f}
+Electrode Label: {electrode_label}
+Object Label: {object_label}
+Electrode Connections: {electrode_connections}
+BBox: [{x1}, {y1}, {x2}, {y2}]
+"""
+            with open(frame_dir / "result.txt", 'w', encoding='utf-8') as f:
+                f.write(result_text)
+
+            logger.debug(f"Debug images saved to {frame_dir}")
+
+        except Exception as e:
+            logger.warning(f"Failed to save debug images for frame {frame_number}: {e}")
+
     def _cleanup(self):
         """清理资源（释放视频文件和缓存）"""
         if self.video_cap is not None:
             self.video_cap.release()
             self.video_cap = None
-        
+
         self.frame_cache.clear()
         logger.debug("Cleaned up video resources and frame cache")

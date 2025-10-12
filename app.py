@@ -11,13 +11,29 @@ from config import Config
 from analyzer.video_processor import VideoAnalyzer
 from mq_consumer import RabbitMQConsumer
 
-# 配置日志（使用统一的配置）
+# 配置日志（同时输出到控制台和文件）
+log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, 'ai-processor.log')
+
+# 创建处理器
+file_handler = logging.FileHandler(log_file, encoding='utf-8')
+console_handler = logging.StreamHandler()
+
+# 设置格式
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
+
+# 配置根日志记录器
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL, logging.INFO),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    handlers=[file_handler, console_handler]
 )
+
 logger = logging.getLogger(__name__)
 logger.info(f"日志级别设置为: {Config.LOG_LEVEL}")
+logger.info(f"日志文件: {log_file}")
 
 # 创建Flask应用
 app = Flask(__name__)
