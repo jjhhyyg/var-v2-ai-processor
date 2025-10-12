@@ -39,7 +39,7 @@ def merge_tracking_objects(
     scenario_params = {
         "default": {
             "max_frame_gap": 15,
-            "max_distance": 30,
+            "max_distance": 100.0,
             "association_threshold": 0.5
         },
         "adhesion_falling": {
@@ -92,7 +92,7 @@ def merge_tracking_objects(
         f"合并完成: 原始{len(tracking_objects)}个 -> "
         f"统一{len(unified_objects)}个 (合并率: {report['merge_rate']})"
     )
-    logger.info(f"合并组数: {report['total_merge_groups']}, 单独对象: {report['single_objects']}")
+    logger.info(f"合并组数: {report['merged_groups']}, 单独对象: {report['single_objects']}")
     
     # 打印合并详情
     if report['merge_details']:

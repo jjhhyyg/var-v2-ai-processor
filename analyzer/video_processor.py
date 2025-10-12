@@ -360,7 +360,7 @@ class VideoAnalyzer:
                     # 使用合并后的结果
                     tracking_objects = unified_objects
                     logger.info(f"Task {task_id}: Merge completed - {merge_report['total_original_objects']} → {merge_report['total_unified_objects']} objects ({merge_report['merge_rate']})")
-                    logger.info(f"Task {task_id}: Merged {merge_report['total_merge_groups']} groups")
+                    logger.info(f"Task {task_id}: Merged {merge_report['merged_groups']} groups")
                     if merge_report['merge_details']:
                         logger.info(f"Task {task_id}: Merge details: {merge_report['merge_details']}")
                 except Exception as e:
@@ -473,18 +473,27 @@ class VideoAnalyzer:
                 if hasattr(self.yolo_tracker, 'model') and self.yolo_tracker.model is not None:
                     # 将模型移到CPU并清理GPU缓存
                     try:
-                        self.yolo_tracker.model.to('cpu')
+                        import torch
+                        # 只有当模型不在CPU上时才移动
+                        model_device = next(self.yolo_tracker.model.parameters()).device
+                        if model_device.type != 'cpu':
+                            self.yolo_tracker.model.to('cpu')
+                            logger.debug(f"Model moved from {model_device} to CPU")
+
+                        # 清理设备缓存
                         if self.device == 'cuda':
-                            import torch
-                            torch.cuda.empty_cache()
-                            logger.debug("CUDA cache cleared")
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                                logger.debug("CUDA cache cleared")
                         elif self.device == 'mps':
-                            import torch
-                            if hasattr(torch.mps, 'empty_cache'):
+                            if hasattr(torch, 'mps') and hasattr(torch.mps, 'empty_cache'):
                                 torch.mps.empty_cache()
                                 logger.debug("MPS cache cleared")
+                    except StopIteration:
+                        # 模型没有参数，无需清理
+                        logger.debug("Model has no parameters, skipping device cleanup")
                     except Exception as e:
-                        logger.warning(f"Failed to clear device cache: {e}")
+                        logger.warning(f"Failed to clear device cache: {e}", exc_info=False)
 
             # 清理预处理器资源（如果有临时文件）
             if hasattr(self, 'preprocessor') and self.preprocessor is not None:

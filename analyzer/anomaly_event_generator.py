@@ -39,8 +39,10 @@ class AnomalyEventGenerator:
         self.video_path = video_path
         self.frame_cache = {}  # 缓存读取的帧，避免重复IO
         self.video_cap = None  # VideoCapture对象
+        self.total_frames = None  # 视频总帧数
         self.debug_mode = debug_mode  # 调试模式开关
         self.debug_output_dir = None  # 调试输出目录
+        self._video_perspective_cache = None  # 缓存视频视角分析结果
 
         # 如果启用调试模式，创建调试输出目录
         if self.debug_mode and self.video_path:
@@ -265,35 +267,156 @@ class AnomalyEventGenerator:
         
         return events
 
+    def _analyze_video_perspective_from_content(self) -> Optional[str]:
+        """
+        通过分析视频内容判断视角（基于熔池亮度分布）
+
+        原理：
+        - 熔池区域通常是视频中最亮的部分
+        - 分析视频帧的左右两侧亮度分布
+        - 如果左侧+0.5中间的亮度更高，说明熔池在右侧（观察视角为右侧）
+        - 反之熔池在左侧（观察视角为左侧）
+
+        Returns:
+            'LEFT' 或 'RIGHT'，如果分析失败则返回 None
+        """
+        if not self.video_path:
+            return None
+
+        # 使用缓存避免重复分析
+        if self._video_perspective_cache is not None:
+            return self._video_perspective_cache
+
+        try:
+            logger.info(f"Analyzing video content to determine perspective: {self.video_path}")
+
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                logger.warning(f"Failed to open video for perspective analysis")
+                return None
+
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            # 采样策略：采样30帧（分布在整个视频中）
+            sample_count = min(30, total_frames)
+            sample_indices = np.linspace(0, total_frames - 1, sample_count, dtype=int)
+
+            left_center_sum = 0
+            right_center_sum = 0
+            valid_samples = 0
+
+            # 形态学核，去除噪声
+            kernel = np.ones((5, 5), np.uint8)
+
+            for frame_idx in sample_indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame_bgr = cap.read()
+
+                if not ret:
+                    continue
+
+                # 转灰度
+                gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+                h, w = gray.shape
+
+                # 分为三部分
+                left = gray[:, :w // 3]
+                center = gray[:, w // 3:2 * w // 3]
+                right = gray[:, 2 * w // 3:]
+
+                # 使用形态学操作提取亮度高的区域
+                left_thresh = cv2.morphologyEx(left, cv2.MORPH_CLOSE, kernel)
+                right_thresh = cv2.morphologyEx(right, cv2.MORPH_CLOSE, kernel)
+
+                # 计算亮度梯度
+                grad_left = np.abs(np.diff(left, axis=1)).sum()
+                grad_right = np.abs(np.diff(right, axis=1)).sum()
+
+                # 计算左侧与右侧总亮度（考虑梯度）
+                left_center_sum += (np.mean(left) + 0.5 * np.mean(center) + grad_left * 0.001)
+                right_center_sum += (np.mean(right) + 0.5 * np.mean(center) + grad_right * 0.001)
+
+                valid_samples += 1
+
+            cap.release()
+
+            if valid_samples == 0:
+                logger.warning(f"No valid samples for perspective analysis")
+                return None
+
+            # 计算整体平均
+            avg_left_center = left_center_sum / valid_samples
+            avg_right_center = right_center_sum / valid_samples
+
+            # 判断视角
+            # 根据亮度分布判断：
+            # - 如果左侧+中间的亮度更高，说明从右侧观察（右侧视角）
+            # - 如果右侧+中间的亮度更高，说明从左侧观察（左侧视角）
+            if avg_left_center > avg_right_center:
+                perspective = 'RIGHT'
+            else:
+                perspective = 'LEFT'
+
+            logger.info(f"Video perspective analysis: Left+0.5*Center={avg_left_center:.2f}, "
+                       f"Right+0.5*Center={avg_right_center:.2f}, "
+                       f"Determined perspective: {perspective}")
+
+            # 缓存结果
+            self._video_perspective_cache = perspective
+            return perspective
+
+        except Exception as e:
+            logger.warning(f"Failed to analyze video perspective from content: {e}")
+            return None
+
     def _determine_video_perspective(self, video_filename: str) -> str:
         """
-        根据视频文件名判断视角（左/右）
-        
-        规则：如果文件名包含 'left'、'LEFT'、'L'、'左' 等，判定为左视角；
-             如果包含 'right'、'RIGHT'、'R'、'右' 等，判定为右视角；
-             否则默认为左视角
-        
+        判断视频视角（左/右）
+
+        优先级：
+        1. 首先尝试通过分析视频内容判断（最可靠）
+        2. 如果失败，再通过文件名判断
+
         Args:
             video_filename: 视频文件名
-        
+
         Returns:
             'LEFT' 或 'RIGHT'
         """
+        # 策略1: 基于视频内容分析（最可靠）
+        content_perspective = self._analyze_video_perspective_from_content()
+        if content_perspective is not None:
+            logger.info(f"Video perspective determined from content analysis: {content_perspective}")
+            return content_perspective
+
+        # 策略2: 基于文件名分析（备用方案）
+        import re
+
         filename_lower = video_filename.lower()
-        
-        # 左视角标识
-        left_markers = ['left', '_l_', '_l.', 'l_', '左']
+
+        # 优先检查：以 r/l + 数字开头的文件名（如 r13, l01）
+        if re.match(r'^r\d+', filename_lower):
+            logger.info(f"Video perspective determined from filename pattern 'r<number>': RIGHT")
+            return 'RIGHT'
+        if re.match(r'^l\d+', filename_lower):
+            logger.info(f"Video perspective determined from filename pattern 'l<number>': LEFT")
+            return 'LEFT'
+
         # 右视角标识
         right_markers = ['right', '_r_', '_r.', 'r_', '右']
-        
+        # 左视角标识
+        left_markers = ['left', '_l_', '_l.', 'l_', '左']
+
         for marker in right_markers:
             if marker in filename_lower:
+                logger.info(f"Video perspective determined from filename marker '{marker}': RIGHT")
                 return 'RIGHT'
-        
+
         for marker in left_markers:
             if marker in filename_lower:
+                logger.info(f"Video perspective determined from filename marker '{marker}': LEFT")
                 return 'LEFT'
-        
+
         # 默认左视角
         logger.warning(f"Unable to determine video perspective from filename '{video_filename}', "
                       f"defaulting to LEFT")
@@ -794,22 +917,22 @@ class AnomalyEventGenerator:
     def _read_frame(self, frame_number: int) -> Optional[np.ndarray]:
         """
         从视频读取指定帧（带缓存）
-        
+
         Args:
             frame_number: 帧号
-        
+
         Returns:
             帧图像（numpy数组），如果读取失败则返回None
         """
         # 检查缓存
         if frame_number in self.frame_cache:
             return self.frame_cache[frame_number]
-        
+
         # 检查是否有视频路径
         if not self.video_path:
             logger.warning(f"No video path provided, cannot read frame {frame_number}")
             return None
-        
+
         try:
             # 延迟初始化VideoCapture
             if self.video_cap is None:
@@ -817,22 +940,30 @@ class AnomalyEventGenerator:
                 if not self.video_cap.isOpened():
                     logger.error(f"Failed to open video: {self.video_path}")
                     return None
-            
+                # 获取视频总帧数
+                self.total_frames = int(self.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                logger.debug(f"Video has {self.total_frames} frames")
+
+            # 检查帧号是否在有效范围内
+            if self.total_frames is not None and frame_number >= self.total_frames:
+                logger.warning(f"Frame {frame_number} is out of range (total frames: {self.total_frames})")
+                return None
+
             # 设置帧位置
             self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-            
+
             # 读取帧
             ret, frame = self.video_cap.read()
-            
+
             if ret and frame is not None:
                 # 缓存帧（限制缓存大小，避免内存溢出）
                 if len(self.frame_cache) < 100:  # 最多缓存100帧
                     self.frame_cache[frame_number] = frame
                 return frame
             else:
-                logger.warning(f"Failed to read frame {frame_number} from video")
+                logger.warning(f"Failed to read frame {frame_number} from video (ret={ret}, total_frames={self.total_frames})")
                 return None
-                
+
         except Exception as e:
             logger.error(f"Error reading frame {frame_number}: {e}")
             return None
