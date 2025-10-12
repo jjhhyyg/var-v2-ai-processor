@@ -4,7 +4,7 @@ FROM python:3.12-slim
 LABEL maintainer="侯阳洋"
 LABEL description="VAR熔池视频分析系统 - AI处理模块"
 
-WORKDIR /app
+WORKDIR /app/ai-processor
 
 # 安装系统依赖
 # libglib2.0-0, libsm6, libxext6, libxrender-dev, libgomp1: OpenCV依赖
@@ -31,15 +31,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制应用代码
 COPY . .
 
-# 创建必要的目录
-RUN mkdir -p /var/var-analysis/storage/videos \
-    /var/var-analysis/storage/result_videos \
-    /var/var-analysis/storage/preprocessed_videos \
-    /var/var-analysis/storage/temp \
-    logs
-
-# 设置文件权限
-RUN chown -R appuser:appgroup /app /var/var-analysis
+# 创建必要的目录并设置权限
+RUN mkdir -p ../storage/videos \
+    ../storage/result_videos \
+    ../storage/preprocessed_videos \
+    ../storage/temp \
+    ../storage/tracking_results \
+    logs && \
+    chown -R appuser:appgroup /app
 
 # 切换到非root用户
 USER appuser

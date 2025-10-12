@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 存储数据
+storage/
+!storage/.gitkeep
+
+# 日志
+logs/
+*.log
+
+# 环境变量
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# 文档
+README.md
+*.md
+OPTIMIZATION_SUMMARY.md
+
+# 模型文件（已在Dockerfile中单独COPY）
+# weights/
+# 如果要在构建时包含权重，注释掉上面这行
+
+# 备份文件
+*.bak
