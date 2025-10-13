@@ -10,6 +10,7 @@ import uuid
 import atexit
 import shutil
 import logging
+import subprocess
 from pathlib import Path
 from typing import Optional, Tuple, Callable
 from utils.file_lock import FileLock
@@ -168,7 +169,153 @@ class VideoStorageManager:
         
         logger.debug(f"视频文件验证通过: {path} ({result['size_mb']:.2f}MB, {frames} 帧)")
         return result
-    
+
+    @staticmethod
+    def convert_to_h264_with_faststart(video_path: str) -> bool:
+        """
+        使用 FFmpeg 将视频转换为 H.264 编码并应用 faststart（支持浏览器流式播放）
+
+        如果视频已经是 H.264 编码，则只应用 faststart（快速）
+        如果是其他编码（如 MPEG-4），则重新编码为 H.264（较慢）
+
+        Args:
+            video_path: 视频文件路径
+
+        Returns:
+            bool: 是否成功
+
+        Raises:
+            RuntimeError: FFmpeg 处理失败
+        """
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"视频文件不存在: {video_path}")
+
+        # 创建临时输出文件
+        temp_output = video_path + ".h264.tmp.mp4"
+
+        try:
+            # 先检测视频编码格式
+            logger.info(f"检测视频编码格式: {video_path}")
+            probe_cmd = [
+                'ffprobe',
+                '-v', 'error',
+                '-select_streams', 'v:0',
+                '-show_entries', 'stream=codec_name',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                video_path
+            ]
+
+            probe_result = subprocess.run(
+                probe_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30
+            )
+
+            codec_name = probe_result.stdout.strip().lower() if probe_result.returncode == 0 else 'unknown'
+            logger.info(f"当前视频编码: {codec_name}")
+
+            # 根据编码格式选择处理方式
+            if codec_name in ['h264', 'avc']:
+                # 已经是 H.264，只需要应用 faststart
+                logger.info(f"视频已是 H.264 编码，应用 faststart: {video_path}")
+                cmd = [
+                    'ffmpeg',
+                    '-i', video_path,
+                    '-c', 'copy',  # 不重新编码
+                    '-movflags', 'faststart',
+                    '-y',
+                    temp_output
+                ]
+            else:
+                # 需要重新编码为 H.264
+                logger.info(f"视频编码为 {codec_name}，重新编码为 H.264: {video_path}")
+                cmd = [
+                    'ffmpeg',
+                    '-i', video_path,
+                    '-c:v', 'libx264',  # 使用 H.264 编码器
+                    '-preset', 'medium',  # 编码速度/质量平衡
+                    '-crf', '23',  # 恒定质量因子（18-28，23为默认，越小质量越好）
+                    '-c:a', 'copy',  # 音频流直接复制（如果有）
+                    '-movflags', 'faststart',  # 同时应用 faststart
+                    '-y',
+                    temp_output
+                ]
+
+            # 执行 FFmpeg 命令
+            logger.info(f"开始处理视频...")
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=600  # 10分钟超时（重新编码需要更长时间）
+            )
+
+            if result.returncode != 0:
+                error_msg = result.stderr
+                logger.error(f"FFmpeg 处理失败: {error_msg}")
+                raise RuntimeError(f"FFmpeg 处理失败: {error_msg}")
+
+            # 验证输出文件
+            if not os.path.exists(temp_output):
+                raise RuntimeError("FFmpeg 未生成输出文件")
+
+            output_size = os.path.getsize(temp_output)
+            if output_size == 0:
+                raise RuntimeError("FFmpeg 输出文件大小为0")
+
+            # 替换原文件
+            original_size = os.path.getsize(video_path)
+            os.remove(video_path)
+            shutil.move(temp_output, video_path)
+
+            action = "Faststart 应用" if codec_name in ['h264', 'avc'] else f"重新编码 ({codec_name} -> H.264)"
+            logger.info(
+                f"视频处理完成 ({action}): {video_path} "
+                f"(原始: {original_size / 1024 / 1024:.2f}MB, "
+                f"处理后: {output_size / 1024 / 1024:.2f}MB)"
+            )
+
+            return True
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"FFmpeg 处理超时: {video_path}")
+            # 清理临时文件
+            if os.path.exists(temp_output):
+                os.remove(temp_output)
+            raise RuntimeError("FFmpeg 处理超时")
+
+        except Exception as e:
+            logger.error(f"视频处理失败: {e}", exc_info=True)
+            # 清理临时文件
+            if os.path.exists(temp_output):
+                try:
+                    os.remove(temp_output)
+                except:
+                    pass
+            raise
+
+    @staticmethod
+    def apply_faststart(video_path: str) -> bool:
+        """
+        使用 FFmpeg 将视频的 moov atom 移到文件开头，使其支持流式播放
+
+        已弃用：请使用 convert_to_h264_with_faststart() 以确保浏览器兼容性
+
+        Args:
+            video_path: 视频文件路径
+
+        Returns:
+            bool: 是否成功
+
+        Raises:
+            RuntimeError: FFmpeg 处理失败
+        """
+        logger.warning("apply_faststart() 已弃用，将调用 convert_to_h264_with_faststart()")
+        return VideoStorageManager.convert_to_h264_with_faststart(video_path)
+
     def create_video_writer(
         self,
         output_path: str,
@@ -338,10 +485,10 @@ class VideoStorageManager:
                         # 验证目标文件
                         final_size = os.path.getsize(output_path)
                         logger.info(f"最终文件大小: {final_size / 1024 / 1024:.2f}MB")
-                        
+
                         # 从清理列表中移除
                         self._remove_from_cleanup_list(temp_output_path)
-                        
+
                     except Exception as e:
                         logger.error(f"移动临时文件失败: {e}", exc_info=True)
                         self._remove_temp_file(temp_output_path)
@@ -350,6 +497,16 @@ class VideoStorageManager:
                     # 失败时删除临时文件
                     logger.info(f"写入失败，删除临时文件: {temp_output_path}")
                     self._remove_temp_file(temp_output_path)
+
+            # 成功完成后，转换为 H.264 编码并应用 faststart（确保浏览器兼容性）
+            # 注意：如果视频已经是 H.264，只会应用 faststart（快速）
+            # 如果是 MPEG-4 等其他编码，会重新编码为 H.264（较慢但必要）
+            if success:
+                try:
+                    VideoStorageManager.convert_to_h264_with_faststart(output_path)
+                except Exception as e:
+                    logger.error(f"视频编码转换失败，浏览器可能无法播放: {e}")
+                    # 不抛出异常，因为文件本身是有效的，只是可能无法在浏览器中播放
         
         return out, actual_output_path, finalize
     

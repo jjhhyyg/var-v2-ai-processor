@@ -26,55 +26,79 @@ logger = logging.getLogger(__name__)
 def cv2_add_chinese_text(img, text, position, font_size=20, color=(255, 255, 255)):
     """
     在OpenCV图像上添加中文文本
-    
+
     Args:
         img: OpenCV图像 (numpy array)
         text: 要添加的文本
         position: 文本位置 (x, y)
         font_size: 字体大小
         color: 文本颜色 (B, G, R)
-    
+
     Returns:
         添加文本后的图像
     """
     # 将OpenCV图像(BGR)转换为PIL图像(RGB)
     img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(img_pil)
-    
+
     # 尝试使用系统字体
+    font = None
     try:
-        # macOS字体路径
+        # 优先使用的字体路径列表(按优先级排序)
         font_paths = [
+            'C:/Windows/Fonts/msyh.ttc',  # Windows 微软雅黑 (优先)
+            'C:/Windows/Fonts/simhei.ttf',  # Windows 黑体
+            'C:/Windows/Fonts/simsun.ttc',  # Windows 宋体
             '/System/Library/Fonts/PingFang.ttc',  # macOS PingFang
             '/System/Library/Fonts/STHeiti Medium.ttc',  # macOS 黑体
-            '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',  # Linux
-            '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',  # Linux WQY
-            'C:/Windows/Fonts/msyh.ttc',  # Windows 微软雅黑
-            'C:/Windows/Fonts/simhei.ttf',  # Windows 黑体
+            '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',  # Ubuntu 24.04 Noto CJK (优先)
+            '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',  # Ubuntu Noto CJK 备选路径
+            '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',  # Ubuntu WQY Zen Hei
+            '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',  # Linux WQY Micro Hei
+            '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',  # Linux Droid (旧版)
         ]
-        
-        font = None
+
         for font_path in font_paths:
             if os.path.exists(font_path):
-                font = ImageFont.truetype(font_path, font_size)
-                break
-        
+                try:
+                    font = ImageFont.truetype(font_path, font_size)
+                    logger.debug(f"成功加载字体: {font_path}")
+                    break
+                except Exception as font_error:
+                    logger.debug(f"尝试加载字体失败 {font_path}: {font_error}")
+                    continue
+
         if font is None:
-            # 如果没有找到字体，使用默认字体
-            font = ImageFont.load_default()
+            # Windows环境下的额外尝试：使用系统默认字体目录
+            import platform
+            if platform.system() == 'Windows':
+                try:
+                    # 尝试直接使用字体名称(Windows可以识别)
+                    font = ImageFont.truetype("msyh.ttc", font_size)
+                    logger.info("成功通过字体名称加载 msyh.ttc")
+                except:
+                    try:
+                        font = ImageFont.truetype("simhei.ttf", font_size)
+                        logger.info("成功通过字体名称加载 simhei.ttf")
+                    except:
+                        logger.warning("无法加载任何中文字体，文本可能无法正常显示")
+                        font = ImageFont.load_default()
+            else:
+                logger.warning("未找到可用的中文字体，使用默认字体")
+                font = ImageFont.load_default()
     except Exception as e:
-        logger.warning(f"加载字体失败: {e}, 使用默认字体")
+        logger.warning(f"加载字体时发生异常: {e}, 使用默认字体")
         font = ImageFont.load_default()
-    
+
     # 将BGR颜色转换为RGB
     color_rgb = (color[2], color[1], color[0])
-    
+
     # 绘制文本
     draw.text(position, text, font=font, fill=color_rgb)
-    
+
     # 将PIL图像转换回OpenCV图像
     img_with_text = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-    
+
     return img_with_text
 
 
@@ -296,8 +320,9 @@ class VideoAnalyzer:
                 # 4. 定期更新进度和保存检查点
                 if frame_count % Config.PROGRESS_UPDATE_INTERVAL == 0:
                     analyzing_elapsed = int(time.time() - analyzing_start)
-                    is_timeout = analyzing_elapsed > timeout_threshold
-                    timeout_warning = analyzing_elapsed > (timeout_threshold * 0.8)
+                    total_elapsed = preprocessing_duration + analyzing_elapsed
+                    is_timeout = total_elapsed > timeout_threshold
+                    timeout_warning = total_elapsed > (timeout_threshold * 0.8)
 
                     progress = frame_count / total_frames
                     estimated_remaining = int((total_frames - frame_count) / fps * analyzing_elapsed / frame_count) if frame_count > 0 else 0
@@ -323,9 +348,9 @@ class VideoAnalyzer:
             # ===== 完成处理 =====
             analyzing_duration = int(time.time() - analyzing_start)
             total_duration = preprocessing_duration + analyzing_duration
-            is_timeout = analyzing_duration > timeout_threshold
+            is_timeout = total_duration > timeout_threshold
 
-            logger.info(f"Task {task_id}: Analysis completed - {analyzing_duration}s (timeout: {is_timeout})")
+            logger.info(f"Task {task_id}: Analysis completed - analyzing: {analyzing_duration}s, total: {total_duration}s (timeout: {is_timeout})")
 
             # 进行全局频率分析
             logger.info(f"Task {task_id}: Performing global frequency analysis")
@@ -605,7 +630,7 @@ class VideoAnalyzer:
                     if not ret:
                         break
 
-                    # 使用保存的检测结果（不再重新运行ByteTrack）
+                    # 使用保存的检测结果（不再重新运行BotSORT）
                     if frame_count < len(all_detections):
                         detections = all_detections[frame_count]
                     else:
