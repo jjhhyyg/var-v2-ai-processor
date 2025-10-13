@@ -1,8 +1,46 @@
-# AI处理模块Dockerfile
+# ========================================
+# 多阶段构建 - AI处理模块Dockerfile
+# 阶段1: 代码混淆
+# 阶段2: 运行环境
+# ========================================
+
+# ========================================
+# 阶段1: 代码混淆（使用 PyArmor）
+# ========================================
+FROM python:3.12-slim AS obfuscator
+
+LABEL stage="obfuscation"
+
+WORKDIR /build
+
+# 安装 PyArmor
+RUN pip install --no-cache-dir pyarmor==8.5.9
+
+# 复制源代码（只复制需要的文件）
+COPY requirements.txt .
+COPY *.py ./
+COPY analyzer/ ./analyzer/
+COPY preprocessor/ ./preprocessor/
+COPY utils/ ./utils/
+COPY botsort.yaml ./
+
+# 使用 PyArmor 混淆代码（试用版基础混淆）
+# 注意：试用版不支持高级选项如 --restrict, --enable-jit, --obf-code 2
+# 基础混淆仍然提供字节码加密和运行时保护
+# 如需更强保护，请购买 PyArmor 许可证后使用高级选项
+RUN pyarmor gen \
+    --output /obfuscated \
+    --recursive \
+    .
+
+# ========================================
+# 阶段2: 运行环境（生产镜像）
+# ========================================
 FROM python:3.12-slim
 
 LABEL maintainer="侯阳洋"
-LABEL description="VAR熔池视频分析系统 - AI处理模块"
+LABEL description="VAR熔池视频分析系统 - AI处理模块（源码已混淆保护）"
+LABEL security="code-obfuscated"
 
 WORKDIR /app/ai-processor
 
@@ -28,8 +66,11 @@ RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制应用代码
-COPY . .
+# 从混淆阶段复制混淆后的代码（替代 COPY . .）
+COPY --from=obfuscator /obfuscated/ .
+
+# 复制配置文件（不需要混淆）
+COPY botsort.yaml .
 
 # 创建必要的目录并设置权限
 RUN mkdir -p ../storage/videos \
