@@ -1,5 +1,5 @@
 # ========================================
-# 多阶段构建 - AI处理模块Dockerfile (CPU版本)
+# 多阶段构建 - AI处理模块Dockerfile (CPU版本, 已优化缓存)
 # 阶段1: 代码混淆
 # 阶段2: 运行环境
 # ========================================
@@ -11,22 +11,24 @@ FROM python:3.12-slim AS obfuscator
 LABEL stage="obfuscation"
 WORKDIR /build
 
-# 安装 PyArmor
+# 1. 仅复制 CPU 版本的依赖文件
+COPY requirements-cpu.txt .
+
+# 2. 安装 PyArmor (只有在 requirements-cpu.txt 变化时才会重新执行)
 RUN pip install --no-cache-dir pyarmor==8.5.9
 
-# 复制源代码(只复制需要的文件)
-COPY requirements.txt .
+# 3. 最后复制源代码 (修改代码不会影响上面的 pip install 缓存)
 COPY *.py ./
 COPY analyzer/ ./analyzer/
 COPY preprocessor/ ./preprocessor/
 COPY utils/ ./utils/
 COPY botsort.yaml ./
 
-# 使用 PyArmor 混淆代码(试用版基础混淆)
+# 使用 PyArmor 混淆代码
 RUN pyarmor gen \
     --output /obfuscated \
     --recursive \
-    --exclude requirements.txt \
+    --exclude requirements-cpu.txt \
     --exclude botsort.yaml \
     .
 
@@ -45,7 +47,7 @@ WORKDIR /app/ai-processor
 # 设置非交互式安装
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 安装系统依赖和Python 3.12(Ubuntu 24.04原生支持)
+# 安装系统依赖 (不常变动，放在前面)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 \
     python3.12-dev \
@@ -64,7 +66,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && fc-cache -fv \
     && rm -rf /var/lib/apt/lists/*
 
-# 设置环境变量(在安装依赖前设置)
+# 设置环境变量
 ENV PIP_BREAK_SYSTEM_PACKAGES=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
@@ -72,21 +74,20 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1 \
 # 创建非root用户
 RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
-# 复制requirements.txt
-COPY requirements.txt .
+# --- 缓存优化核心部分 ---
+# 1. 只复制 CPU 版本的依赖文件
+COPY requirements-cpu.txt .
 
-# 先安装CPU版本的PyTorch和torchvision
-RUN pip3 install --no-cache-dir \
-    torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# 2. 一次性安装所有 Python 依赖
+# --mount 使用 BuildKit 缓存，即使依赖文件变化也能加速安装
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --no-cache-dir -r requirements-cpu.txt
 
-# 再安装其他依赖
-RUN pip3 install --no-cache-dir -r requirements.txt
-
-# 从混淆阶段复制混淆后的代码
+# 3. 最后再复制混淆后的代码和配置文件
+# 日常修改代码不会让上面耗时的 pip install 缓存失效
 COPY --from=obfuscator /obfuscated/ .
-
-# 复制配置文件(不需要混淆)
 COPY botsort.yaml .
+# --- 缓存优化结束 ---
 
 # 创建必要的目录并设置权限
 RUN mkdir -p \
