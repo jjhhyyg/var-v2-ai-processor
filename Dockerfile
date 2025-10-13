@@ -96,8 +96,11 @@ RUN mkdir -p \
     ../storage/preprocessed_videos \
     ../storage/temp \
     ../storage/tracking_results \
+    ./weights \
     logs && \
     chown -R appuser:appgroup /app
+
+COPY weights/best.pt ./weights/
 
 # 切换到非root用户
 USER appuser
