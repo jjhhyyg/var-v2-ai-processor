@@ -99,6 +99,8 @@ RUN mkdir -p \
     logs && \
     chown -R appuser:appgroup /app
 
+COPY weights/best.pt ./weights/
+
 # 切换到非root用户
 USER appuser
 
