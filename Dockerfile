@@ -89,13 +89,8 @@ COPY --from=obfuscator /obfuscated/ .
 COPY botsort.yaml .
 # --- 缓存优化结束 ---
 
-# 创建必要的目录并设置权限
+# 创建必要的目录并设置权限（storage目录由 docker volume 管理，不在此创建）
 RUN mkdir -p \
-    ../storage/videos \
-    ../storage/result_videos \
-    ../storage/preprocessed_videos \
-    ../storage/temp \
-    ../storage/tracking_results \
     ./weights \
     logs && \
     chown -R appuser:appgroup /app
