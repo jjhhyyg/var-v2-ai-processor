@@ -1,249 +1,136 @@
-# VAR Molten Pool Analysis System - AI Processing Module
+# VAR Molten Pool Analysis System - AI Processor
 
 [简体中文](README.zh.md) | English
 
-> Video analysis service based on Flask + PyTorch + Ultralytics YOLO
+> Flask-based AI service for preprocessing, YOLO detection, tracking, and result export.
 
-## Features
+## Responsibilities
 
-- ✅ YOLOv11 object detection and BoT-SORT multi-object tracking
-- ✅ Automatic detection of anomalous events (adhesion, ingot crown, glow, side arc, creeping arc, etc.)
-- ✅ Dynamic parameter calculation (pool flicker frequency, area, perimeter)
-- ✅ Real-time progress callbacks
-- ✅ Timeout detection and alerts
-- ✅ Health check endpoint
+The AI processor is responsible for:
 
-## System Requirements
+- consuming analysis messages from RabbitMQ
+- optional video preprocessing
+- YOLO11 detection and BoT-SORT tracking
+- anomaly event generation and metrics calculation
+- exporting annotated result videos
+- calling back the backend with progress, result data, model version, and generated file paths
 
-### Python Environment
+## Runtime Model
 
-- Python 3.9+
-- Conda environment (recommended)
+This service supports two local modes:
 
-### Hardware Requirements
+1. start the Flask application and health endpoint through `app.py`
+2. start the RabbitMQ consumer in the same runtime, so analysis tasks can be consumed asynchronously
 
-- CPU: Multi-core processor
-- GPU: NVIDIA GPU (recommended, requires CUDA support) or Apple Silicon (supports MPS)
-- Memory: 8GB+ (16GB+ recommended)
+In practice, local integration testing should run the full `app.py` entrypoint.
 
-## Installation
+## Current Configuration
 
-### 1. Create and Activate Conda Environment
+The AI processor uses `config.py` as the configuration source of truth.
+
+Important facts:
+
+- `config.py` loads the root repository `.env`, not only `ai-processor/.env`
+- backend callback configuration uses `BACKEND_BASE_URL`
+- default model path is `weights/best.pt`
+- default queue name is `video_analysis_queue`
+
+Important variables include:
+
+- `AI_PROCESSOR_HOST`
+- `AI_PROCESSOR_PORT`
+- `AI_PROCESSOR_DEBUG`
+- `BACKEND_BASE_URL`
+- `YOLO_MODEL_PATH`
+- `YOLO_DEVICE`
+- `DEFAULT_CONFIDENCE_THRESHOLD`
+- `DEFAULT_IOU_THRESHOLD`
+- `TRACKER_CONFIG`
+- `PROGRESS_UPDATE_INTERVAL`
+- `RABBITMQ_*`
+- `STORAGE_*`
+
+Generate environment files from the main repository root:
 
 ```bash
-# Use the pre-configured pytorch environment
-conda activate pytorch
+./scripts/use-env.sh dev
 ```
 
-### 2. Install Dependencies
+## Local Development
+
+Install dependencies:
 
 ```bash
 cd ai-processor
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment Variables
+If you intentionally want a CPU-only dependency set, use:
 
 ```bash
-# Copy the environment variable example file
-cp .env.example .env
-
-# Edit the .env file and modify the configuration
-vim .env
+pip install -r requirements-cpu.txt
 ```
 
-### 4. Download YOLO Model
+Start the service:
 
 ```bash
-# The model will be automatically downloaded on first run
-# Or manually download and place it in the specified path
-# Download URL: https://github.com/ultralytics/assets/releases
-```
-
-## Usage
-
-### Start the Service
-
-```bash
-conda activate pytorch
 python app.py
 ```
 
-The service will start at `http://localhost:5000`.
+Default local URL:
 
-### Health Check
+- `http://localhost:5000`
+
+Health check:
 
 ```bash
 curl http://localhost:5000/health
 ```
 
-### API Endpoints
+## Model and Device
 
-#### 1. Health Check
+Before local testing or deployment, confirm:
 
-```text
-GET /health
-```
+- `ai-processor/weights/best.pt` exists
+- `YOLO_DEVICE` matches your environment, or is intentionally left empty for auto selection
 
-Response example:
+Typical device choices:
 
-```json
-{
-  "status": "healthy",
-  "model_loaded": true,
-  "model_version": "yolo11n",
-  "gpu_available": true,
-  "gpu_name": "NVIDIA GeForce RTX 3080",
-  "device": "cuda",
-  "version": "1.0.0"
-}
-```
+- `cuda`: NVIDIA GPU
+- `mps`: Apple Silicon
+- `cpu`: CPU only
+- empty string: auto select
 
-#### 2. Video Analysis
+## Important Files
 
-```text
-POST /api/analyze
-```
+- `app.py`: Flask entrypoint and health endpoint
+- `mq_consumer.py`: RabbitMQ consumer and task dispatch
+- `config.py`: configuration source of truth
+- `analyzer/video_processor.py`: preprocessing, analysis, export flow
+- `preprocessor/video_preprocessor.py`: CPU-based video preprocessing
 
-Request body:
+## Local Testing Expectations
 
-```json
-{
-  "taskId": 123,
-  "videoPath": "/path/to/video.mp4",
-  "videoDuration": 1800,
-  "timeoutThreshold": 7200,
-  "config": {
-    "confidenceThreshold": 0.5,
-    "iouThreshold": 0.45
-  }
-}
-```
+Minimum checks before deployment:
 
-Response example:
+- `GET /health` returns healthy status
+- model loads successfully
+- the selected device is reported correctly
+- RabbitMQ connection succeeds
+- a real analysis task can be consumed and completed
 
-```json
-{
-  "status": "accepted",
-  "taskId": 123,
-  "message": "Task accepted, processing started"
-}
-```
+Be honest about the current state: this module does not have a strong automated test suite. Manual integration testing is mandatory.
 
-## Project Structure
+## Docker Notes
 
-```text
-ai-processor/
-├── analyzer/              # Core analysis module
-│   ├── __init__.py
-│   ├── video_processor.py    # Main video processing logic
-│   ├── yolo_tracker.py       # YOLO detection and tracking
-│   ├── event_detector.py     # Event detection
-│   └── metrics_calculator.py # Dynamic parameter calculation
-├── utils/                 # Utility modules
-│   ├── __init__.py
-│   └── callback.py           # Backend callback utilities
-├── app.py                 # Flask main application
-├── config.py              # Configuration file
-├── requirements.txt       # Python dependencies
-├── .env.example           # Environment variable example
-└── README.md              # This document
-```
+- GPU production uses the main repository `docker-compose.prod.yml`
+- CPU production uses `docker-compose.prod.cpu.yml`
+- CPU production image is built from `Dockerfile.cpu`
+- production deployment still depends on `weights/best.pt` being available
 
-## Configuration
+## What to Read Next
 
-### Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| AI_PROCESSOR_HOST | Service listening address | 0.0.0.0 |
-| AI_PROCESSOR_PORT | Service port | 5000 |
-| AI_CALLBACK_URL | Backend callback URL | http://localhost:8080/api/tasks |
-| YOLO_MODEL_PATH | YOLO model path | yolo11n.pt |
-| YOLO_DEVICE | Computing device | (auto-select) |
-| DEFAULT_CONFIDENCE_THRESHOLD | Default confidence threshold | 0.5 |
-| DEFAULT_IOU_THRESHOLD | Default IoU threshold | 0.45 |
-
-### Class Definitions
-
-The system detects the following 6 classes of objects/phenomena:
-
-| ID | Class Name | Description |
-|----|-----------|-------------|
-| 0 | Pool Not to Edge | Pool edge has not reached crystallizer edge |
-| 1 | Adhesion | Black irregular adhesion on electrode surface |
-| 2 | Ingot Crown | Ingot crown at crystallizer edge |
-| 3 | Glow | Abnormal gas discharge in electrode ring gap area |
-| 4 | Side Arc | Arc continuously appears at electrode edge |
-| 5 | Creeping Arc | Arc traces on electrode surface |
-
-## Event Inference Logic
-
-### 1. Adhesion-Related Events
-
-- **Electrode Adhesion Formation**: First detection of adhesion
-- **Electrode Adhesion Detachment**: Adhesion trajectory disappears, judged to fall into pool or be captured by crystallizer based on disappearance position
-
-### 2. Ingot Crown-Related Events
-
-- **Ingot Crown Detachment**: Ingot crown moves from crystallizer edge to pool
-
-### 3. Arc Anomaly Events
-
-- **Glow, Side Arc, Creeping Arc**: Continuous events, recording start and end frames
-
-## Development Notes
-
-### Dynamic Parameter Calculation
-
-The current version uses simulated data for dynamic parameter calculation. To implement real algorithms, refer to the `RealMetricsCalculator` class in `analyzer/metrics_calculator.py`.
-
-Implementation approach:
-
-1. **Flicker Frequency**: Use FFT to analyze brightness time-domain signals
-2. **Pool Area**: Image segmentation + pixel counting
-3. **Pool Perimeter**: Edge detection + perimeter calculation
-
-### Model Training
-
-To train a custom YOLO model:
-
-```bash
-# Train using Ultralytics
-yolo train data=var_dataset.yaml model=yolo11n.pt epochs=100 imgsz=640
-```
-
-## Troubleshooting
-
-### GPU Not Available
-
-Check CUDA installation:
-
-```bash
-python -c "import torch; print(torch.cuda.is_available())"
-```
-
-### Out of Memory
-
-Reduce batch size or use a smaller model (e.g., yolo11n.pt).
-
-### Model Loading Failed
-
-Ensure the model file exists and the path is correct:
-
-```bash
-ls -lh yolo11n.pt
-```
-
-## Performance Optimization Tips
-
-1. **Use GPU Acceleration**: Set `YOLO_DEVICE=cuda` or `YOLO_DEVICE=0`
-2. **Reduce Progress Update Frequency**: Modify `PROGRESS_UPDATE_INTERVAL`
-3. **Use Smaller Models**: e.g., `yolo11n.pt` instead of `yolo11x.pt`
-4. **Reduce Video Resolution**: Scale videos during preprocessing
-
-## License
-
-This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0) - see the [LICENSE](LICENSE) file for details.
-
-**Important:** Any modified version of this software used over a network must make the source code available to users.
+- Main repository overview:
+  `https://github.com/jjhhyyg/VAR-melting-defect-detection-source-code.git`
+- Main handover guide in the root repository:
+  `docs/项目接手、开发测试与部署指南.md`
