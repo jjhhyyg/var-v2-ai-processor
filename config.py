@@ -5,9 +5,6 @@ AI处理模块配置文件
 所有配置项都可以通过环境变量覆盖，环境变量在 codes/.env 文件中定义。
 
 核心配置：
-- AI_PROCESSOR_HOST: Flask服务监听地址（默认：0.0.0.0）
-- AI_PROCESSOR_PORT: Flask服务端口（默认：5000）
-- AI_PROCESSOR_DEBUG: 是否启用调试模式（默认：False）
 - AI_LOG_LEVEL: 日志级别（默认：INFO）支持：DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 YOLO模型配置：
@@ -20,14 +17,8 @@ YOLO模型配置：
 - STORAGE_BASE_PATH: 基础存储目录（默认：storage，相对于codes/目录）
 - STORAGE_*_SUBDIR: 各子目录名称（推荐使用 get_storage_path() 方法获取完整路径）
 
-RabbitMQ配置：
-- RABBITMQ_HOST: RabbitMQ服务器地址（默认：localhost）
-- RABBITMQ_PORT: RabbitMQ端口（默认：5672）
-- RABBITMQ_USER: 用户名（默认：var_user）
-- RABBITMQ_PASSWORD: 密码（默认：var_password）
-
-后端服务配置：
-- BACKEND_BASE_URL: 后端服务基础URL（默认：http://localhost:8080）
+HTTP 回调兼容配置：
+- BACKEND_BASE_URL: 兼容 HTTP 回调路径的基础 URL（默认：http://localhost:8080）；桌面端 stdout:// 路径不会依赖它
 """
 import os
 import torch
@@ -48,23 +39,15 @@ class Config:
     """
 
     # ========================================
-    # Flask服务配置
-    # ========================================
-    FLASK_HOST = os.getenv('AI_PROCESSOR_HOST', '0.0.0.0')  # 监听地址（0.0.0.0=所有网卡）
-    FLASK_PORT = int(os.getenv('AI_PROCESSOR_PORT', 5000))  # 服务端口
-    DEBUG = os.getenv('AI_PROCESSOR_DEBUG', 'False').lower() == 'true'  # 调试模式
-
-    # ========================================
     # 日志配置
     # ========================================
     # 日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL
     LOG_LEVEL = os.getenv('AI_LOG_LEVEL', 'INFO').upper()
 
     # ========================================
-    # 后端服务配置
+    # HTTP 回调兼容配置
     # ========================================
-    # 后端服务基础URL（不包含 /api 路径）
-    # 用于任务进度回调、结果通知等
+    # HTTP 回调兼容路径。桌面端使用 stdout://，不会依赖后端服务。
     BACKEND_BASE_URL = os.getenv('BACKEND_BASE_URL', 'http://localhost:8080')
 
     # ========================================
@@ -95,7 +78,7 @@ class Config:
         5: '爬弧'
     }
 
-    # 事件类型映射（对应后端EventType枚举）
+    # 事件类型映射（对应桌面端持久化字段）
     # 注意：事件不是YOLO直接输出，而是基于追踪物体的出现/消失等行为分析得出
     # 
     # 异常事件类型：
@@ -124,16 +107,16 @@ class Config:
         '侧弧': 'SIDE_ARC'
     }
 
-    # 物体类别映射（用于后端 category 字段，对应 ObjectCategory 枚举）
+    # 物体类别映射（用于结果事件和追踪对象的 category 字段）
     # 主映射严格对应YOLO模型权重中的类别名称，同时提供兼容性别名映射
     CATEGORY_MAPPING = {
         # 主映射（对应YOLO模型权重中的实际类别名称）
-        '熔池未到边': 'POOL_NOT_REACHED',  # 对应后端 ObjectCategory.POOL_NOT_REACHED
-        '电极粘连物': 'ADHESION',          # 对应后端 ObjectCategory.ADHESION (YOLO权重中的名称)
-        '锭冠': 'CROWN',                   # 对应后端 ObjectCategory.CROWN
-        '辉光': 'GLOW',                    # 对应后端 ObjectCategory.GLOW
-        '边弧（侧弧）': 'SIDE_ARC',        # 对应后端 ObjectCategory.SIDE_ARC
-        '爬弧': 'CREEPING_ARC',            # 对应后端 ObjectCategory.CREEPING_ARC
+        '熔池未到边': 'POOL_NOT_REACHED',
+        '电极粘连物': 'ADHESION',
+        '锭冠': 'CROWN',
+        '辉光': 'GLOW',
+        '边弧（侧弧）': 'SIDE_ARC',
+        '爬弧': 'CREEPING_ARC',
         
         # 兼容性映射（支持可能的别名）
         '粘连物': 'ADHESION',              # 简化别名
@@ -166,7 +149,7 @@ class Config:
     # ========================================
     # 分析任务配置
     # ========================================
-    # 进度更新频率（每处理多少帧更新一次后端）
+    # 进度更新频率（每处理多少帧更新一次回调；桌面 stdout 链路另有时间节流）
     PROGRESS_UPDATE_INTERVAL = int(os.getenv('PROGRESS_UPDATE_INTERVAL', '1'))
 
     # 是否显示YOLO详细输出（调试时启用）
@@ -191,17 +174,6 @@ class Config:
     PREPROCESSED_VIDEO_PATH = os.getenv('PREPROCESSED_VIDEO_PATH', './storage/preprocessed_videos')
 
     # ========================================
-    # RabbitMQ消息队列配置
-    # ========================================
-    RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')  # RabbitMQ服务器地址
-    RABBITMQ_PORT = int(os.getenv('RABBITMQ_PORT', '5672'))  # RabbitMQ端口
-    RABBITMQ_USER = os.getenv('RABBITMQ_USER', 'var_user')  # 用户名
-    RABBITMQ_PASSWORD = os.getenv('RABBITMQ_PASSWORD', 'var_password')  # 密码
-
-    # 视频分析任务队列名称
-    RABBITMQ_VIDEO_ANALYSIS_QUEUE = os.getenv('RABBITMQ_VIDEO_ANALYSIS_QUEUE', 'video_analysis_queue')
-
-    # ========================================
     # 外部二进制配置
     # ========================================
     FFMPEG_BIN = os.getenv('FFMPEG_BIN', 'ffmpeg')
@@ -221,7 +193,7 @@ class Config:
     @classmethod
     def get_callback_url(cls, task_id, endpoint='progress'):
         """
-        获取后端回调URL
+        获取 HTTP 回调 URL。桌面端 stdout:// 路径不会调用该方法。
         
         Args:
             task_id: 任务ID
