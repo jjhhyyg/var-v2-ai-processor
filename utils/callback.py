@@ -2,8 +2,9 @@
 后端回调工具模块
 负责向后端发送进度更新和结果提交
 """
-import requests
+import json
 import logging
+import time
 from typing import Dict, Any, Optional
 from config import Config
 
@@ -13,12 +14,60 @@ logger = logging.getLogger(__name__)
 class BackendCallback:
     """后端回调工具类"""
 
+    STDOUT_CALLBACK_URL = 'stdout://'
+    STDOUT_PROGRESS_INTERVAL_SECONDS = 0.5
+
     def __init__(self, task_id: int, callback_url: Optional[str] = None):
         self.task_id = task_id
         self.callback_url = callback_url or Config.BACKEND_BASE_URL
         self.headers = {
             'Content-Type': 'application/json'
         }
+        self._last_stdout_progress_emit_at: Optional[float] = None
+        self._last_stdout_progress_signature: Optional[tuple[Optional[str], Optional[str], Optional[bool], Optional[bool]]] = None
+
+    def is_stdout_mode(self) -> bool:
+        return self.callback_url == self.STDOUT_CALLBACK_URL
+
+    def emit_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
+        if not self.is_stdout_mode():
+            return False
+
+        try:
+            print(
+                json.dumps({
+                    'type': event_type,
+                    'payload': payload
+                }, ensure_ascii=False),
+                flush=True
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to emit stdout event for task {self.task_id}: {e}")
+            return False
+
+    def _stdout_progress_signature(
+        self,
+        progress_data: Dict[str, Any]
+    ) -> tuple[Optional[str], Optional[str], Optional[bool], Optional[bool]]:
+        return (
+            progress_data.get('status'),
+            progress_data.get('phase'),
+            progress_data.get('isTimeout'),
+            progress_data.get('timeoutWarning')
+        )
+
+    def _should_emit_stdout_progress(self, progress_data: Dict[str, Any]) -> bool:
+        now = time.monotonic()
+        signature = self._stdout_progress_signature(progress_data)
+
+        if self._last_stdout_progress_emit_at is None:
+            return True
+
+        if self._last_stdout_progress_signature != signature:
+            return True
+
+        return (now - self._last_stdout_progress_emit_at) >= self.STDOUT_PROGRESS_INTERVAL_SECONDS
 
     def update_progress(self, progress_data: Dict[str, Any]) -> bool:
         """
@@ -39,9 +88,20 @@ class BackendCallback:
         Returns:
             是否更新成功
         """
+        if self.is_stdout_mode():
+            if not self._should_emit_stdout_progress(progress_data):
+                return True
+
+            emitted = self.emit_event('progress', progress_data)
+            if emitted:
+                self._last_stdout_progress_emit_at = time.monotonic()
+                self._last_stdout_progress_signature = self._stdout_progress_signature(progress_data)
+            return emitted
+
         url = f"{self.callback_url}/api/tasks/{self.task_id}/progress"
 
         try:
+            import requests
             response = requests.post(
                 url,
                 json=progress_data,
@@ -74,9 +134,13 @@ class BackendCallback:
         Returns:
             是否提交成功
         """
+        if self.is_stdout_mode():
+            return self.emit_event('result', result_data)
+
         url = f"{self.callback_url}/api/tasks/{self.task_id}/result"
 
         try:
+            import requests
             response = requests.post(
                 url,
                 json=result_data,

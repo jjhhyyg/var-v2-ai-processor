@@ -1,0 +1,19 @@
+# macOS 桌面 worker 最小依赖
+# 目标：仅覆盖 desktop_worker -> analyzer/video_processor -> preprocessor 的实际运行链
+
+# PyTorch 在 macOS 上走官方 pip wheel，设备后端为 MPS/CPU，不存在 CUDA 变体
+torch
+torchvision
+
+# 检测与追踪
+ultralytics>=8.3.156
+lap>=0.5.12
+
+# 图像/视频与数值计算
+opencv-python>=4.10.0
+numpy>=2.0.0
+scipy>=1.13.0
+pillow>=11.0.0
+
+# 配置读取
+python-dotenv>=1.1.0

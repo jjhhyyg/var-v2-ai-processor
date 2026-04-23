@@ -184,6 +184,7 @@ class Config:
     STORAGE_RESULT_VIDEOS_SUBDIR = os.getenv('STORAGE_RESULT_VIDEOS_SUBDIR', 'result_videos')
     STORAGE_PREPROCESSED_VIDEOS_SUBDIR = os.getenv('STORAGE_PREPROCESSED_VIDEOS_SUBDIR', 'preprocessed_videos')
     STORAGE_TRACKING_RESULTS_SUBDIR = os.getenv('STORAGE_TRACKING_RESULTS_SUBDIR', 'tracking_results')
+    TRACKING_RESULTS_FILENAME_TEMPLATE = os.getenv('TRACKING_RESULTS_FILENAME_TEMPLATE', '{task_id}_tracking.json')
 
     # 完整路径（⚠️ 已废弃，保留用于向后兼容，请使用 get_storage_path() 方法）
     RESULT_VIDEO_PATH = os.getenv('RESULT_VIDEO_PATH', './storage/result_videos')
@@ -199,6 +200,12 @@ class Config:
 
     # 视频分析任务队列名称
     RABBITMQ_VIDEO_ANALYSIS_QUEUE = os.getenv('RABBITMQ_VIDEO_ANALYSIS_QUEUE', 'video_analysis_queue')
+
+    # ========================================
+    # 外部二进制配置
+    # ========================================
+    FFMPEG_BIN = os.getenv('FFMPEG_BIN', 'ffmpeg')
+    FFPROBE_BIN = os.getenv('FFPROBE_BIN', 'ffprobe')
 
     # ========================================
     # 内部路径常量（不建议直接使用）
@@ -328,3 +335,8 @@ class Config:
             print(f"✓ 使用 CPU 设备")
 
         return device
+
+    @classmethod
+    def get_tracking_results_path(cls, task_id: int) -> str:
+        filename = cls.TRACKING_RESULTS_FILENAME_TEMPLATE.format(task_id=task_id)
+        return os.path.join(cls.get_storage_path(cls.STORAGE_TRACKING_RESULTS_SUBDIR), filename)

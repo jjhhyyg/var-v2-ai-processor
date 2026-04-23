@@ -13,6 +13,7 @@ import logging
 import subprocess
 from pathlib import Path
 from typing import Optional, Tuple, Callable
+from config import Config
 from utils.file_lock import FileLock
 
 logger = logging.getLogger(__name__)
@@ -197,7 +198,7 @@ class VideoStorageManager:
             # 先检测视频编码格式
             logger.info(f"检测视频编码格式: {video_path}")
             probe_cmd = [
-                'ffprobe',
+                Config.FFPROBE_BIN,
                 '-v', 'error',
                 '-select_streams', 'v:0',
                 '-show_entries', 'stream=codec_name',
@@ -221,7 +222,7 @@ class VideoStorageManager:
                 # 已经是 H.264，只需要应用 faststart
                 logger.info(f"视频已是 H.264 编码，应用 faststart: {video_path}")
                 cmd = [
-                    'ffmpeg',
+                    Config.FFMPEG_BIN,
                     '-i', video_path,
                     '-c', 'copy',  # 不重新编码
                     '-movflags', 'faststart',
@@ -232,7 +233,7 @@ class VideoStorageManager:
                 # 需要重新编码为 H.264
                 logger.info(f"视频编码为 {codec_name}，重新编码为 H.264: {video_path}")
                 cmd = [
-                    'ffmpeg',
+                    Config.FFMPEG_BIN,
                     '-i', video_path,
                     '-c:v', 'libx264',  # 使用 H.264 编码器
                     '-preset', 'medium',  # 编码速度/质量平衡

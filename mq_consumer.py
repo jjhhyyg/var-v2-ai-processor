@@ -111,7 +111,7 @@ class RabbitMQConsumer:
             # 获取预处理配置
             enable_preprocessing = config.get('enablePreprocessing', False)
             preprocessing_strength = config.get('preprocessingStrength', 'moderate')
-            preprocessing_enhance_pool = config.get('preprocessingEnhancePool', True)
+            preprocessing_enhance_pool = config.get('preprocessingEnhancePool', False)
 
             # 获取追踪合并配置
             enable_tracking_merge = config.get('enableTrackingMerge', True)

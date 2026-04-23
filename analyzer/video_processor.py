@@ -138,11 +138,12 @@ class VideoAnalyzer:
                           iou_threshold: float = 0.45,
                           enable_preprocessing: bool = False,
                           preprocessing_strength: str = 'moderate',
-                          preprocessing_enhance_pool: bool = True,
+                          preprocessing_enhance_pool: bool = False,
                           enable_tracking_merge: bool = True,
                           tracking_merge_strategy: str = 'auto',
                           callback_url: Optional[str] = None,
-                          frame_rate: float = 25.0) -> tuple[str, str]:
+                          frame_rate: float = 25.0,
+                          preprocessed_output_path: Optional[str] = None) -> tuple[str, str]:
         """
         分析视频任务（主处理函数）
 
@@ -182,21 +183,25 @@ class VideoAnalyzer:
                 logger.info(f"Task {task_id}: Starting video preprocessing (strength={preprocessing_strength}, enhance_pool={preprocessing_enhance_pool})")
                 callback.notify_preprocessing(f"正在预处理视频（强度：{preprocessing_strength}）...")
 
-                # 创建预处理视频存储目录
-                # 使用推荐的 get_storage_path() 方法获取绝对路径
-                preprocessed_dir = Path(Config.get_storage_path(Config.STORAGE_PREPROCESSED_VIDEOS_SUBDIR))
-                preprocessed_dir.mkdir(parents=True, exist_ok=True)
+                if preprocessed_output_path:
+                    preprocessed_video_path = preprocessed_output_path
+                    Path(preprocessed_video_path).parent.mkdir(parents=True, exist_ok=True)
+                else:
+                    # 创建预处理视频存储目录
+                    # 使用推荐的 get_storage_path() 方法获取绝对路径
+                    preprocessed_dir = Path(Config.get_storage_path(Config.STORAGE_PREPROCESSED_VIDEOS_SUBDIR))
+                    preprocessed_dir.mkdir(parents=True, exist_ok=True)
 
-                # 生成预处理后的视频文件名（提取基础名称，添加后缀，再添加时间戳）
-                from utils.filename_utils import add_or_update_timestamp, extract_base_name
-                
-                video_stem = Path(video_path).stem
-                # 提取原始基础名称（去掉时间戳）
-                base_name = extract_base_name(video_stem)
-                # 添加 _preprocessed 后缀，然后添加时间戳
-                base_filename = f"{base_name}_preprocessed.mp4"
-                preprocessed_filename = Path(add_or_update_timestamp(base_filename, update_existing=True)).name
-                preprocessed_video_path = str(preprocessed_dir / preprocessed_filename)
+                    # 生成预处理后的视频文件名（提取基础名称，添加后缀，再添加时间戳）
+                    from utils.filename_utils import add_or_update_timestamp, extract_base_name
+                    
+                    video_stem = Path(video_path).stem
+                    # 提取原始基础名称（去掉时间戳）
+                    base_name = extract_base_name(video_stem)
+                    # 添加 _preprocessed 后缀，然后添加时间戳
+                    base_filename = f"{base_name}_preprocessed.mp4"
+                    preprocessed_filename = Path(add_or_update_timestamp(base_filename, update_existing=True)).name
+                    preprocessed_video_path = str(preprocessed_dir / preprocessed_filename)
 
                 # 进度回调函数
                 def preprocessing_progress_callback(current_frame, total_frames, elapsed_time):
@@ -224,25 +229,30 @@ class VideoAnalyzer:
 
                 # 通知后端更新预处理视频路径
                 try:
-                    import requests
-                    # 转换为相对于codes/目录的路径（如 storage/preprocessed_videos/xxx.mp4）
-                    relative_path = Config.to_relative_path(os.path.abspath(preprocessed_video_path))
-                    # 确保路径以 storage/ 开头（而不是 ../storage/）
-                    if relative_path.startswith('../storage/'):
-                        relative_path = relative_path[3:]  # 移除 '../'
-                    elif relative_path.startswith('storage/'):
-                        pass  # 已经是正确格式
-                    
-                    update_url = f"{Config.BACKEND_BASE_URL}/api/tasks/{task_id}/preprocessed-video"
-                    response = requests.put(
-                        update_url,
-                        json={'preprocessedVideoPath': relative_path},
-                        timeout=10
-                    )
-                    if response.status_code == 200:
-                        logger.info(f"Task {task_id}: Preprocessed video path updated: {relative_path}")
+                    if callback.is_stdout_mode():
+                        callback.emit_event('preprocessed_video_ready', {
+                            'path': os.path.abspath(preprocessed_video_path)
+                        })
                     else:
-                        logger.warning(f"Task {task_id}: Failed to update preprocessed video path: {response.status_code}")
+                        import requests
+                        # 转换为相对于codes/目录的路径（如 storage/preprocessed_videos/xxx.mp4）
+                        relative_path = Config.to_relative_path(os.path.abspath(preprocessed_video_path))
+                        # 确保路径以 storage/ 开头（而不是 ../storage/）
+                        if relative_path.startswith('../storage/'):
+                            relative_path = relative_path[3:]  # 移除 '../'
+                        elif relative_path.startswith('storage/'):
+                            pass  # 已经是正确格式
+                        
+                        update_url = f"{Config.BACKEND_BASE_URL}/api/tasks/{task_id}/preprocessed-video"
+                        response = requests.put(
+                            update_url,
+                            json={'preprocessedVideoPath': relative_path},
+                            timeout=10
+                        )
+                        if response.status_code == 200:
+                            logger.info(f"Task {task_id}: Preprocessed video path updated: {relative_path}")
+                        else:
+                            logger.warning(f"Task {task_id}: Failed to update preprocessed video path: {response.status_code}")
                 except Exception as e:
                     logger.error(f"Task {task_id}: Failed to notify backend about preprocessed video: {e}")
 
@@ -420,9 +430,8 @@ class VideoAnalyzer:
 
 
             # 保存检测结果到文件,供生成结果视频时使用（使用原子写入）
-            tracking_results_dir = Path(Config.get_storage_path('tracking_results'))
-            tracking_results_dir.mkdir(parents=True, exist_ok=True)
-            tracking_file = tracking_results_dir / f"{task_id}_tracking.json"
+            tracking_file = Path(Config.get_tracking_results_path(task_id))
+            tracking_file.parent.mkdir(parents=True, exist_ok=True)
 
             try:
                 atomic_write_json(
@@ -575,7 +584,7 @@ class VideoAnalyzer:
             logger.info(f"Task {task_id}: Starting export annotated video")
 
             # 读取之前保存的追踪结果
-            tracking_file = Path(Config.get_storage_path('tracking_results')) / f"{task_id}_tracking.json"
+            tracking_file = Path(Config.get_tracking_results_path(task_id))
             if not tracking_file.exists():
                 raise FileNotFoundError(f"Tracking results not found: {tracking_file}. Please run analyze_video_task first.")
 

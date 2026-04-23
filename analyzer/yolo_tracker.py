@@ -153,7 +153,7 @@ class YOLOTracker:
 
         except Exception as e:
             logger.error(f"Error during tracking: {e}", exc_info=True)
-            return []
+            raise RuntimeError(f"YOLO追踪失败: {e}") from e
 
     def reset_tracking(self):
         """
