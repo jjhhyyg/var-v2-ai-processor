@@ -27,6 +27,10 @@ pip install -r requirements-desktop-macos.txt
 pip install -r requirements.txt
 ```
 
+## Model Weights
+
+Model weights are not committed to Git. The default build script reads `weights/best.pt`; place that file locally or set `YOLO_MODEL_PATH` to another local model path.
+
 ## Key Files
 
 - `desktop_worker.py`: desktop worker entrypoint

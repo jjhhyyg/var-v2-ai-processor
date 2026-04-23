@@ -27,6 +27,10 @@ pip install -r requirements-desktop-macos.txt
 pip install -r requirements.txt
 ```
 
+## 模型权重
+
+模型权重不提交到 Git。默认构建脚本会读取 `weights/best.pt`，请在本地放置该文件，或通过 `YOLO_MODEL_PATH` 指向其他本地模型路径。
+
 ## 关键文件
 
 - `desktop_worker.py`：桌面 worker 入口

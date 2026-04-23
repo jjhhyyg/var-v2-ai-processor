@@ -10,3 +10,11 @@ demo/
 *.log
 logs/
 logs/*
+
+# Model weights are local/runtime assets, not source code.
+weights/*.pt
+weights/*.pth
+weights/*.onnx
+weights/*.engine
+weights/*.mlmodel
+weights/.DS_Store
