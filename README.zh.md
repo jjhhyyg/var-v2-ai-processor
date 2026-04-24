@@ -2,7 +2,7 @@
 
 简体中文 | [English](README.md)
 
-> 当前 AI 模块服务于桌面端本地分析链路，不再提供旧的 Flask/RabbitMQ 服务入口，也不再提供 Docker 镜像入口。
+> 当前 AI 模块服务于桌面端本地分析链路，桌面入口是 `desktop_worker.py`。
 
 ## 模块职责
 
@@ -47,4 +47,4 @@ pip install -r requirements.txt
 
 ## 说明
 
-`BackendCallback` 仍保留 HTTP 回调分支，目的是降低算法主流程改造风险；当前桌面端路径使用 `stdout://`，不会依赖旧后端服务。
+`BackendCallback` 仍保留 HTTP 回调分支，目的是降低算法主流程改造风险；当前桌面端路径使用 `stdout://`，运行时不依赖外部服务。

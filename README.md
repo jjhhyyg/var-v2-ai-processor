@@ -2,7 +2,7 @@
 
 [简体中文](README.zh.md) | English
 
-> The current AI module serves the local desktop analysis pipeline. It no longer provides the legacy Flask/RabbitMQ service entrypoint or Docker image entrypoints.
+> The current AI module serves the local desktop analysis pipeline. The desktop entrypoint is `desktop_worker.py`.
 
 ## Responsibilities
 
