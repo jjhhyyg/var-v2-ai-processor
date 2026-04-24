@@ -34,6 +34,7 @@ class BackendCallback:
             return False
 
         try:
+            # stdout is reserved for the desktop NDJSON protocol. Do not log human-readable text here.
             print(
                 json.dumps({
                     'type': event_type,

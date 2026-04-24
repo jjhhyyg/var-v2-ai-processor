@@ -2,10 +2,13 @@
 文件名工具模块
 提供带时间戳的文件名生成和更新功能
 """
+import logging
 import os
 import re
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def generate_timestamp():
@@ -150,12 +153,13 @@ def add_or_update_timestamp(filepath: str, update_existing: bool = True) -> str:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
     # 测试代码
-    print("测试文件名时间戳工具:")
-    print("=" * 50)
+    logger.info("测试文件名时间戳工具:")
+    logger.info("=" * 50)
     
     # 测试提取时间戳
-    print("\n1. 提取时间戳:")
+    logger.info("\n1. 提取时间戳:")
     test_cases = [
         "video.mp4",
         "video_20240101_120000.mp4",
@@ -164,26 +168,26 @@ if __name__ == "__main__":
     ]
     for case in test_cases:
         base, ts = extract_timestamp_from_filename(case)
-        print(f"  {case} -> 基础名: '{base}', 时间戳: {ts}")
+        logger.info("  %s -> 基础名: '%s', 时间戳: %s", case, base, ts)
     
     # 测试生成文件名
-    print("\n2. 生成带时间戳的文件名:")
-    print(f"  video -> {generate_filename_with_timestamp('video')}")
-    print(f"  video_preprocessed -> {generate_filename_with_timestamp('video_preprocessed')}")
+    logger.info("\n2. 生成带时间戳的文件名:")
+    logger.info("  video -> %s", generate_filename_with_timestamp('video'))
+    logger.info("  video_preprocessed -> %s", generate_filename_with_timestamp('video_preprocessed'))
     
     # 测试更新时间戳
-    print("\n3. 更新现有时间戳:")
+    logger.info("\n3. 更新现有时间戳:")
     old_name = "video_20240101_120000"
-    print(f"  {old_name} (update=True) -> {generate_filename_with_timestamp(old_name, '.mp4', True)}")
-    print(f"  {old_name} (update=False) -> {generate_filename_with_timestamp(old_name, '.mp4', False)}")
+    logger.info("  %s (update=True) -> %s", old_name, generate_filename_with_timestamp(old_name, '.mp4', True))
+    logger.info("  %s (update=False) -> %s", old_name, generate_filename_with_timestamp(old_name, '.mp4', False))
     
     # 测试完整路径
-    print("\n4. 处理完整路径:")
+    logger.info("\n4. 处理完整路径:")
     test_paths = [
         "/path/to/video.mp4",
         "/path/to/video_20240101_120000.mp4"
     ]
     for path in test_paths:
-        print(f"  {path}")
-        print(f"    -> (add) {add_or_update_timestamp(path, update_existing=False)}")
-        print(f"    -> (update) {add_or_update_timestamp(path, update_existing=True)}")
+        logger.info("  %s", path)
+        logger.info("    -> (add) %s", add_or_update_timestamp(path, update_existing=False))
+        logger.info("    -> (update) %s", add_or_update_timestamp(path, update_existing=True))

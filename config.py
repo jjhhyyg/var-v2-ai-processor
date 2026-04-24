@@ -6,6 +6,7 @@ AI处理模块配置文件
 
 核心配置：
 - AI_LOG_LEVEL: 日志级别（默认：INFO）支持：DEBUG, INFO, WARNING, ERROR, CRITICAL
+- AI_DEBUG: 是否启用算法调试输出（默认：False）
 
 YOLO模型配置：
 - YOLO_MODEL_PATH: 模型文件路径（默认：weights/best.pt）
@@ -20,6 +21,7 @@ YOLO模型配置：
 HTTP 回调兼容配置：
 - BACKEND_BASE_URL: 兼容 HTTP 回调路径的基础 URL（默认：http://localhost:8080）；桌面端 stdout:// 路径不会依赖它
 """
+import logging
 import os
 import torch
 from dotenv import load_dotenv
@@ -28,6 +30,8 @@ from dotenv import load_dotenv
 # codes/ai-processor/config.py -> codes/.env
 _root_dir = os.path.join(os.path.dirname(__file__), '..')
 load_dotenv(os.path.join(_root_dir, '.env'))
+
+logger = logging.getLogger(__name__)
 
 
 class Config:
@@ -43,6 +47,8 @@ class Config:
     # ========================================
     # 日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL
     LOG_LEVEL = os.getenv('AI_LOG_LEVEL', 'INFO').upper()
+    # 算法调试开关：用于控制异常事件生成等模块的调试输出
+    DEBUG = os.getenv('AI_DEBUG', os.getenv('DEBUG', 'False')).lower() in ('1', 'true', 'yes', 'on')
 
     # ========================================
     # HTTP 回调兼容配置
@@ -298,13 +304,13 @@ class Config:
         if torch.cuda.is_available():
             device = 'cuda'
             device_name = torch.cuda.get_device_name(0)
-            print(f"✓ 使用 CUDA 设备: {device_name}")
+            logger.info("使用 CUDA 设备: %s", device_name)
         elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             device = 'mps'
-            print(f"✓ 使用 Apple MPS (Metal Performance Shaders) 设备")
+            logger.info("使用 Apple MPS (Metal Performance Shaders) 设备")
         else:
             device = 'cpu'
-            print(f"✓ 使用 CPU 设备")
+            logger.info("使用 CPU 设备")
 
         return device
 

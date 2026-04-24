@@ -14,15 +14,19 @@ os.environ.setdefault('ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS', '1')
 
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 import traceback
 from pathlib import Path
 
 
 logger = logging.getLogger(__name__)
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUP_COUNT = 200
 
 
 def emit_event(event_type: str, payload: dict) -> None:
+    # stdout is reserved for the Rust NDJSON protocol. Human-readable logs must use logging/stderr.
     print(json.dumps({
         'type': event_type,
         'payload': payload
@@ -33,17 +37,30 @@ def configure_logging(log_path: str) -> None:
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
 
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    file_handler = logging.FileHandler(log_path, encoding='utf-8')
+    file_handler = RotatingFileHandler(
+        log_path,
+        mode='a',
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
+        encoding='utf-8'
+    )
+    file_handler.namer = rotate_log_name
     file_handler.setFormatter(formatter)
-
-    stderr_handler = logging.StreamHandler(sys.stderr)
-    stderr_handler.setFormatter(formatter)
 
     logging.basicConfig(
         level=logging.INFO,
-        handlers=[file_handler, stderr_handler],
+        handlers=[file_handler],
         force=True
     )
+
+
+def rotate_log_name(default_name: str) -> str:
+    path = Path(default_name)
+    base = path.name
+    if '.log.' not in base:
+        return default_name
+    stem, index = base.rsplit('.log.', 1)
+    return str(path.with_name(f'{stem}.{index}.log'))
 
 
 def load_job(job_path: str) -> dict:
@@ -56,6 +73,7 @@ def run_self_check() -> int:
         import lap
         from ultralytics.trackers.utils import matching
 
+        # Self-check is a CLI JSON contract, not the worker NDJSON event stream.
         print(json.dumps({
             'status': 'ok',
             'checks': {
