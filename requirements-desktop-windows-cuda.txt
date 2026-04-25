@@ -1,0 +1,12 @@
+# Windows desktop CUDA packaging dependencies.
+# Install PyTorch with conda first, e.g.:
+# conda install -n var-env pytorch torchvision pytorch-cuda=12.4 -c pytorch -c nvidia
+
+ultralytics>=8.3.156
+opencv-python>=4.10.0
+numpy>=2.0.0
+scipy>=1.13.0
+pillow>=11.0.0
+lap>=0.5.12
+requests>=2.32.0
+python-dotenv>=1.1.0

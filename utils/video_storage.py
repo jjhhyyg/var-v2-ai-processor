@@ -19,6 +19,21 @@ from utils.file_lock import FileLock
 logger = logging.getLogger(__name__)
 
 
+def _hidden_subprocess_kwargs() -> dict:
+    if sys.platform != 'win32':
+        return {}
+
+    kwargs = {}
+    create_no_window = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    if create_no_window:
+        kwargs['creationflags'] = create_no_window
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    kwargs['startupinfo'] = startupinfo
+    return kwargs
+
+
 class VideoStorageManager:
     """
     视频存储管理器
@@ -211,7 +226,8 @@ class VideoStorageManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=30
+                timeout=30,
+                **_hidden_subprocess_kwargs()
             )
 
             codec_name = probe_result.stdout.strip().lower() if probe_result.returncode == 0 else 'unknown'
@@ -251,7 +267,8 @@ class VideoStorageManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=600  # 10分钟超时（重新编码需要更长时间）
+                timeout=600,  # 10分钟超时（重新编码需要更长时间）
+                **_hidden_subprocess_kwargs()
             )
 
             if result.returncode != 0:
