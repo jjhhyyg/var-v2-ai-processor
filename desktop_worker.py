@@ -70,15 +70,13 @@ def load_job(job_path: str) -> dict:
 
 def run_self_check() -> int:
     try:
-        import lap
-        from ultralytics.trackers.utils import matching
+        import ultralytics
 
         # Self-check is a CLI JSON contract, not the worker NDJSON event stream.
         print(json.dumps({
             'status': 'ok',
             'checks': {
-                'lap': getattr(lap, '__version__', 'unknown'),
-                'matching': getattr(matching, '__name__', 'unknown')
+                'ultralytics': getattr(ultralytics, '__version__', 'unknown')
             }
         }, ensure_ascii=False), flush=True)
         return 0
@@ -126,8 +124,6 @@ def main() -> int:
             enable_preprocessing=bool(config.get('enablePreprocessing', False)),
             preprocessing_strength=config.get('preprocessingStrength', 'moderate'),
             preprocessing_enhance_pool=bool(config.get('preprocessingEnhancePool', False)),
-            enable_tracking_merge=bool(config.get('enableTrackingMerge', False)),
-            tracking_merge_strategy=config.get('trackingMergeStrategy', 'auto'),
             callback_url=BackendCallback.STDOUT_CALLBACK_URL,
             frame_rate=float(config.get('frameRate', 25.0)),
             preprocessed_output_path=job.get('preprocessedOutputPath')
@@ -144,7 +140,8 @@ def main() -> int:
                 confidence_threshold=float(config.get('confidenceThreshold', 0.5)),
                 iou_threshold=float(config.get('iouThreshold', 0.45)),
                 callback_url=BackendCallback.STDOUT_CALLBACK_URL,
-                frame_rate=float(config.get('frameRate', 25.0))
+                frame_rate=float(config.get('frameRate', 25.0)),
+                progress_status=status,
             )
 
             if success:

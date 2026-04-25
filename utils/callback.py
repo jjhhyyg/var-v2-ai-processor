@@ -129,7 +129,9 @@ class BackendCallback:
                 - totalDuration: 总耗时（秒）
                 - dynamicMetrics: 动态参数数据列表
                 - anomalyEvents: 异常事件列表
-                - trackingObjects: 追踪物体列表
+                - videoInfo: 视频信息
+                - performance: 性能信息
+                - anomalyEvents: YOLO-only异常事件列表
                 - failureReason: 失败原因（失败时）
 
         Returns:

@@ -85,35 +85,22 @@ class Config:
     }
 
     # 事件类型映射（对应桌面端持久化字段）
-    # 注意：事件不是YOLO直接输出，而是基于追踪物体的出现/消失等行为分析得出
-    # 
-    # 异常事件类型：
-    #   - POOL_NOT_REACHED: 熔池未到边（状态检测）
-    #   - ADHESION_FORMED: 电极形成粘连物（检测到粘连物出现）
-    #   - ADHESION_DROPPED: 电极粘连物脱落（检测到粘连物消失）
-    #   - CROWN_DROPPED: 锭冠脱落（检测到锭冠消失）
-    #
-    # 电弧异常事件类型：
-    #   - GLOW: 辉光
-    #   - SIDE_ARC: 边弧（侧弧）
-    #   - CREEPING_ARC: 爬弧
+    # Phase 0 中事件直接由 YOLO 检测类别产生，不再基于追踪生命周期推导。
     EVENT_TYPE_MAPPING = {
         '熔池未到边': 'POOL_NOT_REACHED',
-        '电极形成粘连物': 'ADHESION_FORMED',
-        '电极粘连物脱落': 'ADHESION_DROPPED',
-        '锭冠脱落': 'CROWN_DROPPED',
+        '电极粘连物': 'ADHESION',
+        '锭冠': 'CROWN',
         '辉光': 'GLOW',
         '边弧（侧弧）': 'SIDE_ARC',
         '爬弧': 'CREEPING_ARC',
-        
+
         # 兼容性映射（支持可能的别名）
-        '形成粘连物': 'ADHESION_FORMED',
-        '粘连物脱落': 'ADHESION_DROPPED',
+        '粘连物': 'ADHESION',
         '边弧': 'SIDE_ARC',
         '侧弧': 'SIDE_ARC'
     }
 
-    # 物体类别映射（用于结果事件和追踪对象的 category 字段）
+    # 物体类别映射（用于结果事件的 category 字段）
     # 主映射严格对应YOLO模型权重中的类别名称，同时提供兼容性别名映射
     CATEGORY_MAPPING = {
         # 主映射（对应YOLO模型权重中的实际类别名称）
@@ -128,28 +115,6 @@ class Config:
         '粘连物': 'ADHESION',              # 简化别名
         '边弧': 'SIDE_ARC',                # 简化别名
         '侧弧': 'SIDE_ARC'                 # 别名
-    }
-
-    # ========================================
-    # BotSort追踪器配置
-    # ========================================
-    # 追踪器配置文件路径（YOLO内置配置）
-    TRACKER_CONFIG = os.getenv('TRACKER_CONFIG', 'botsort.yaml')
-
-    # BotSort详细参数（当使用自定义配置时）
-    TRACKER_PARAMS = {
-        'tracker_type': 'botsort',
-        'track_high_thresh': float(os.getenv('TRACK_HIGH_THRESH', '0.5')),
-        'track_low_thresh': float(os.getenv('TRACK_LOW_THRESH', '0.1')),
-        'new_track_thresh': float(os.getenv('NEW_TRACK_THRESH', '0.6')),
-        'track_buffer': int(os.getenv('TRACK_BUFFER', '30')),
-        'match_thresh': float(os.getenv('MATCH_THRESH', '0.8')),
-        'fuse_score': os.getenv('FUSE_SCORE', 'True').lower() == 'true',
-        'gmc_method': os.getenv('GMC_METHOD', 'None'),
-        # BotSort特有参数
-        'with_reid': os.getenv('WITH_REID', 'False').lower() == 'true',
-        'proximity_thresh': float(os.getenv('PROXIMITY_THRESH', '0.5')),
-        'appearance_thresh': float(os.getenv('APPEARANCE_THRESH', '0.25')),
     }
 
     # ========================================
@@ -172,8 +137,8 @@ class Config:
     STORAGE_VIDEOS_SUBDIR = os.getenv('STORAGE_VIDEOS_SUBDIR', 'videos')
     STORAGE_RESULT_VIDEOS_SUBDIR = os.getenv('STORAGE_RESULT_VIDEOS_SUBDIR', 'result_videos')
     STORAGE_PREPROCESSED_VIDEOS_SUBDIR = os.getenv('STORAGE_PREPROCESSED_VIDEOS_SUBDIR', 'preprocessed_videos')
-    STORAGE_TRACKING_RESULTS_SUBDIR = os.getenv('STORAGE_TRACKING_RESULTS_SUBDIR', 'tracking_results')
-    TRACKING_RESULTS_FILENAME_TEMPLATE = os.getenv('TRACKING_RESULTS_FILENAME_TEMPLATE', '{task_id}_tracking.json')
+    STORAGE_DETECTION_RESULTS_SUBDIR = os.getenv('STORAGE_DETECTION_RESULTS_SUBDIR', 'detection_results')
+    DETECTION_RESULTS_FILENAME_TEMPLATE = os.getenv('DETECTION_RESULTS_FILENAME_TEMPLATE', '{task_id}_detections.json')
 
     # 完整路径（⚠️ 已废弃，保留用于向后兼容，请使用 get_storage_path() 方法）
     RESULT_VIDEO_PATH = os.getenv('RESULT_VIDEO_PATH', './storage/result_videos')
@@ -229,7 +194,7 @@ class Config:
                 - 'videos': 原始上传视频
                 - 'result_videos': 带标注的结果视频
                 - 'preprocessed_videos': 预处理后的视频
-                - 'tracking_results': 追踪结果JSON文件
+                - 'detection_results': YOLO 检测结果 JSON 文件
                 - 或任意自定义子目录名称
 
         Returns:
@@ -239,8 +204,8 @@ class Config:
             >>> Config.get_storage_path('videos')
             '/path/to/codes/storage/videos'
 
-            >>> Config.get_storage_path('tracking_results')
-            '/path/to/codes/storage/tracking_results'
+            >>> Config.get_storage_path('detection_results')
+            '/path/to/codes/storage/detection_results'
 
             >>> Config.get_storage_path()
             '/path/to/codes/storage'
@@ -315,6 +280,6 @@ class Config:
         return device
 
     @classmethod
-    def get_tracking_results_path(cls, task_id: int) -> str:
-        filename = cls.TRACKING_RESULTS_FILENAME_TEMPLATE.format(task_id=task_id)
-        return os.path.join(cls.get_storage_path(cls.STORAGE_TRACKING_RESULTS_SUBDIR), filename)
+    def get_detection_results_path(cls, task_id: int) -> str:
+        filename = cls.DETECTION_RESULTS_FILENAME_TEMPLATE.format(task_id=task_id)
+        return os.path.join(cls.get_storage_path(cls.STORAGE_DETECTION_RESULTS_SUBDIR), filename)

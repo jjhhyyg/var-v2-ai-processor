@@ -7,7 +7,7 @@
 ## Responsibilities
 
 - Read job JSON files created by the Tauri/Rust desktop core
-- Run video preprocessing, YOLO detection, BoT-SORT tracking, and result video export
+- Run video preprocessing, YOLO detect-only detection, and result video export
 - Report status, progress, model version, and generated file paths through stdout NDJSON events
 - Provide the worker entrypoint and minimal dependency files for macOS desktop packaging
 
@@ -34,7 +34,7 @@ Model weights are not committed to Git. The default build script reads `weights/
 ## Key Files
 
 - `desktop_worker.py`: desktop worker entrypoint
-- `analyzer/video_processor.py`: preprocessing, detection, tracking, and result export flow
+- `analyzer/video_processor.py`: preprocessing, detection, and result export flow
 - `preprocessor/video_preprocessor.py`: video preprocessing
 - `utils/callback.py`: stdout/HTTP callback abstraction; desktop uses `stdout://`
 - `requirements-desktop-macos.txt`: minimal macOS worker dependencies

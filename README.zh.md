@@ -7,7 +7,7 @@
 ## 模块职责
 
 - 接收 Tauri/Rust 写入的 job JSON
-- 执行视频预处理、YOLO 检测、BoT-SORT 追踪和结果视频导出
+- 执行视频预处理、YOLO detect-only 检测和结果视频导出
 - 通过 stdout NDJSON 事件向桌面端上报状态、进度、模型版本和结果文件路径
 - 为 macOS 桌面端打包提供最小依赖清单和 worker 入口
 
@@ -34,7 +34,7 @@ pip install -r requirements.txt
 ## 关键文件
 
 - `desktop_worker.py`：桌面 worker 入口
-- `analyzer/video_processor.py`：预处理、检测、追踪和结果导出主流程
+- `analyzer/video_processor.py`：预处理、检测和结果导出主流程
 - `preprocessor/video_preprocessor.py`：视频预处理
 - `utils/callback.py`：stdout/HTTP 回调抽象，桌面端使用 `stdout://`
 - `requirements-desktop-macos.txt`：macOS worker 最小依赖

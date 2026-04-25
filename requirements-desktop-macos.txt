@@ -5,9 +5,8 @@
 torch
 torchvision
 
-# 检测与追踪
+# 检测
 ultralytics>=8.3.156
-lap>=0.5.12
 
 # 图像/视频与数值计算
 opencv-python>=4.10.0
