@@ -68,16 +68,58 @@ def load_job(job_path: str) -> dict:
         return json.load(f)
 
 
-def run_self_check() -> int:
+def run_self_check(args: list[str]) -> int:
     try:
-        import ultralytics
+        backend = 'onnx'
+        model_path = None
+        for index, arg in enumerate(args):
+            if arg == '--backend' and index + 1 < len(args):
+                backend = args[index + 1]
+            elif arg == '--model' and index + 1 < len(args):
+                model_path = args[index + 1]
+
+        checks = {'backend': backend}
+        if backend == 'onnx':
+            import numpy as np
+            import onnxruntime as ort
+
+            try:
+                ort.preload_dlls()
+            except AttributeError:
+                pass
+
+            checks['onnxruntime'] = getattr(ort, '__version__', 'unknown')
+            checks['availableProviders'] = ort.get_available_providers()
+            require_cuda = os.getenv('ONNX_REQUIRE_CUDA', '1').lower() not in ('0', 'false', 'no', 'off')
+            if require_cuda and 'CUDAExecutionProvider' not in checks['availableProviders']:
+                raise RuntimeError(f"CUDAExecutionProvider unavailable: {checks['availableProviders']}")
+
+            if model_path:
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                session = ort.InferenceSession(model_path, providers=providers)
+                checks['activeProviders'] = session.get_providers()
+                if require_cuda and 'CUDAExecutionProvider' not in checks['activeProviders']:
+                    raise RuntimeError(f"CUDAExecutionProvider not active: {checks['activeProviders']}")
+                input_meta = session.get_inputs()[0]
+                shape = [
+                    dim if isinstance(dim, int) and dim > 0 else fallback
+                    for dim, fallback in zip(input_meta.shape, [1, 3, 640, 1024])
+                ]
+                output = session.run(None, {input_meta.name: np.zeros(tuple(shape), dtype=np.float32)})
+                checks['inputShape'] = shape
+                checks['outputShapes'] = [list(item.shape) for item in output]
+
+        elif backend == 'pt':
+            import ultralytics
+
+            checks['ultralytics'] = getattr(ultralytics, '__version__', 'unknown')
+        else:
+            raise ValueError(f'未知 self-check backend: {backend}')
 
         # Self-check is a CLI JSON contract, not the worker NDJSON event stream.
         print(json.dumps({
             'status': 'ok',
-            'checks': {
-                'ultralytics': getattr(ultralytics, '__version__', 'unknown')
-            }
+            'checks': checks
         }, ensure_ascii=False), flush=True)
         return 0
     except Exception:
@@ -87,7 +129,7 @@ def run_self_check() -> int:
 
 def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == '--self-check':
-        return run_self_check()
+        return run_self_check(sys.argv[2:])
 
     if len(sys.argv) < 2:
         emit_event('failed', {'message': '缺少 job 文件路径'})
@@ -124,6 +166,7 @@ def main() -> int:
             enable_preprocessing=bool(config.get('enablePreprocessing', False)),
             preprocessing_strength=config.get('preprocessingStrength', 'moderate'),
             preprocessing_enhance_pool=bool(config.get('preprocessingEnhancePool', False)),
+            enable_dynamic_metrics=bool(config.get('enableDynamicMetrics', True)),
             callback_url=BackendCallback.STDOUT_CALLBACK_URL,
             frame_rate=float(config.get('frameRate', 25.0)),
             preprocessed_output_path=job.get('preprocessedOutputPath')
@@ -147,6 +190,9 @@ def main() -> int:
             if success:
                 emit_event('result_video_ready', {
                     'path': str(Path(result_output_path).resolve())
+                })
+                emit_event('performance_trace', {
+                    'timingSummary': analyzer.get_timing_summary()
                 })
 
         return 0

@@ -12,12 +12,13 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 from PIL import Image, ImageDraw, ImageFont
 
-from .yolo_tracker import YOLOTracker
+from .detector_factory import create_detector
 from .metrics_calculator import MetricsCalculator
 from .anomaly_event_generator import AnomalyEventGenerator
 from utils.callback import BackendCallback
 from utils.video_storage import VideoStorageManager
 from utils.atomic_write import atomic_write_json, safe_read_json
+from utils.performance_trace import PerformanceTrace
 from config import Config
 from preprocessor import OptimizedVideoPreprocessor
 
@@ -77,8 +78,12 @@ class VideoAnalyzer:
     """视频分析器。"""
 
     def __init__(self, model_path: str, device: str = ""):
-        self.device = Config.auto_select_device(device)
-        self.yolo_tracker = YOLOTracker(model_path, self.device)
+        self.model_path = model_path
+        self.yolo_tracker = create_detector(model_path, device)
+        self.device = getattr(self.yolo_tracker, "device", "")
+        self.performance_trace = PerformanceTrace()
+        self._last_analyzed_frame_count = 0
+        self._attach_performance_trace()
         self.metrics_calculator = MetricsCalculator()
         self._is_cleaned_up = False
         self.preprocessor = OptimizedVideoPreprocessor()
@@ -97,6 +102,7 @@ class VideoAnalyzer:
         enable_preprocessing: bool = False,
         preprocessing_strength: str = "moderate",
         preprocessing_enhance_pool: bool = False,
+        enable_dynamic_metrics: bool = True,
         callback_url: Optional[str] = None,
         frame_rate: float = 25.0,
         preprocessed_output_path: Optional[str] = None,
@@ -106,6 +112,9 @@ class VideoAnalyzer:
         final_video_path = None
         preprocessing_duration = 0
         preprocessing_average_fps: Optional[float] = None
+        self.performance_trace = PerformanceTrace()
+        self._last_analyzed_frame_count = 0
+        self._attach_performance_trace()
 
         try:
             all_metrics: List[Dict[str, Any]] = []
@@ -200,20 +209,24 @@ class VideoAnalyzer:
             self.metrics_calculator.reset()
 
             while cap.isOpened():
-                ret, frame = cap.read()
+                with self.performance_trace.measure("videoRead"):
+                    ret, frame = cap.read()
                 if not ret:
                     break
 
                 timestamp = frame_index / fps
-                detections = self.yolo_tracker.detect_frame(
-                    frame,
-                    conf=confidence_threshold,
-                    iou=iou_threshold,
-                )
+                with self.performance_trace.measure("detectorTotal"):
+                    detections = self.yolo_tracker.detect_frame(
+                        frame,
+                        conf=confidence_threshold,
+                        iou=iou_threshold,
+                    )
                 all_detections.append(detections)
 
-                metrics = self.metrics_calculator.calculate_metrics(frame_index, timestamp, frame)
-                all_metrics.append(metrics)
+                if enable_dynamic_metrics:
+                    with self.performance_trace.measure("metrics"):
+                        metrics = self.metrics_calculator.calculate_metrics(frame_index, timestamp, frame)
+                    all_metrics.append(metrics)
 
                 processed_count = frame_index + 1
                 if processed_count % Config.PROGRESS_UPDATE_INTERVAL == 0:
@@ -223,23 +236,25 @@ class VideoAnalyzer:
                     timeout_warning = total_elapsed > (timeout_threshold * 0.8)
                     progress = processed_count / total_frames if total_frames > 0 else 0
 
-                    callback.update_progress(
-                        {
-                            "status": "ANALYZING",
-                            "phase": "视频分析中",
-                            "progress": round(progress, 4),
-                            "currentFrame": frame_index,
-                            "totalFrames": total_frames,
-                            "preprocessingDuration": preprocessing_duration,
-                            "analyzingElapsedTime": analyzing_elapsed,
-                            "isTimeout": is_timeout,
-                            "timeoutWarning": timeout_warning,
-                        }
-                    )
+                    with self.performance_trace.measure("progressEmit"):
+                        callback.update_progress(
+                            {
+                                "status": "ANALYZING",
+                                "phase": "视频分析中",
+                                "progress": round(progress, 4),
+                                "currentFrame": frame_index,
+                                "totalFrames": total_frames,
+                                "preprocessingDuration": preprocessing_duration,
+                                "analyzingElapsedTime": analyzing_elapsed,
+                                "isTimeout": is_timeout,
+                                "timeoutWarning": timeout_warning,
+                            }
+                        )
 
                 frame_index += 1
 
             cap.release()
+            self._last_analyzed_frame_count = frame_index
 
             analyzing_elapsed_seconds = time.time() - analyzing_start
             analyzing_duration = int(analyzing_elapsed_seconds)
@@ -259,21 +274,26 @@ class VideoAnalyzer:
                 is_timeout,
             )
 
-            global_analysis = self.metrics_calculator.analyze_all(fps)
+            global_analysis = None
+            if enable_dynamic_metrics:
+                with self.performance_trace.measure("metrics"):
+                    global_analysis = self.metrics_calculator.analyze_all(fps)
 
-            anomaly_generator = AnomalyEventGenerator(fps=fps, total_frames=total_frames)
-            anomaly_events = anomaly_generator.generate_events(all_detections)
+            with self.performance_trace.measure("eventGeneration"):
+                anomaly_generator = AnomalyEventGenerator(fps=fps, total_frames=total_frames)
+                anomaly_events = anomaly_generator.generate_events(all_detections)
             logger.info("Task %s: Generated %s anomaly events", task_id, len(anomaly_events))
 
             detections_file = Path(Config.get_detection_results_path(task_id))
             detections_file.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_json(
-                str(detections_file),
-                all_detections,
-                indent=2,
-                ensure_ascii=False,
-                use_lock=True,
-            )
+            with self.performance_trace.measure("detectionsPersist"):
+                atomic_write_json(
+                    str(detections_file),
+                    all_detections,
+                    indent=2,
+                    ensure_ascii=False,
+                    use_lock=True,
+                )
 
             result_status = "COMPLETED_TIMEOUT" if is_timeout else "COMPLETED"
             result_data = {
@@ -291,13 +311,15 @@ class VideoAnalyzer:
                     "preprocessingDurationSeconds": preprocessing_duration,
                     "defectDetectionDurationSeconds": analyzing_duration,
                     "detectionBackend": self._detection_backend(),
+                    "timingSummary": self.get_timing_summary(),
                 },
                 "dynamicMetrics": all_metrics,
                 "globalAnalysis": global_analysis,
                 "anomalyEvents": anomaly_events,
             }
 
-            callback.submit_result(result_data)
+            with self.performance_trace.measure("resultEmit"):
+                callback.submit_result(result_data)
             logger.info("Task %s: Result submitted successfully", task_id)
             return result_status, final_video_path
 
@@ -309,7 +331,20 @@ class VideoAnalyzer:
                 logger.error("Task %s: Failed to submit error result: %s", task_id, submit_error)
             return "FAILED", final_video_path if final_video_path else Config.resolve_path(video_path)
 
+    def _attach_performance_trace(self) -> None:
+        if hasattr(self.yolo_tracker, "set_performance_trace"):
+            self.yolo_tracker.set_performance_trace(self.performance_trace)
+
+    def get_timing_summary(self) -> Dict[str, Any]:
+        return self.performance_trace.summary(self._last_analyzed_frame_count)
+
     def _detection_backend(self) -> str:
+        if str(self.model_path).lower().endswith(".onnx"):
+            providers = getattr(self.yolo_tracker, "active_providers", [])
+            if "CUDAExecutionProvider" in providers:
+                return "onnxruntime-cuda"
+            return "onnxruntime-cpu"
+
         device = str(self.device).lower()
         if device.startswith("cuda") or device.isdigit():
             return "pytorch-cuda"
@@ -329,6 +364,11 @@ class VideoAnalyzer:
 
         try:
             if hasattr(self, "yolo_tracker") and self.yolo_tracker is not None:
+                if hasattr(self.yolo_tracker, "cleanup"):
+                    self.yolo_tracker.cleanup()
+                    self._is_cleaned_up = True
+                    return
+
                 if hasattr(self.yolo_tracker, "model") and self.yolo_tracker.model is not None:
                     try:
                         import torch
@@ -410,34 +450,36 @@ class VideoAnalyzer:
             export_start = time.time()
             success = False
 
-            try:
-                while cap.isOpened():
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
+            with self.performance_trace.measure("resultVideoExport"):
+                try:
+                    while cap.isOpened():
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
 
-                    detections = all_detections[frame_index] if frame_index < len(all_detections) else []
-                    annotated_frame = self._draw_detections(frame, detections)
-                    out.write(annotated_frame)
+                        detections = all_detections[frame_index] if frame_index < len(all_detections) else []
+                        annotated_frame = self._draw_detections(frame, detections)
+                        out.write(annotated_frame)
 
-                    if frame_index % Config.PROGRESS_UPDATE_INTERVAL == 0:
-                        progress = (frame_index + 1) / total_frames if total_frames > 0 else 0
-                        callback.update_progress(
-                            {
-                                "status": progress_status,
-                                "phase": "生成结果视频",
-                                "progress": round(progress, 4),
-                                "currentFrame": frame_index,
-                                "totalFrames": total_frames,
-                            }
-                        )
+                        if frame_index % Config.PROGRESS_UPDATE_INTERVAL == 0:
+                            progress = (frame_index + 1) / total_frames if total_frames > 0 else 0
+                            with self.performance_trace.measure("progressEmit"):
+                                callback.update_progress(
+                                    {
+                                        "status": progress_status,
+                                        "phase": "生成结果视频",
+                                        "progress": round(progress, 4),
+                                        "currentFrame": frame_index,
+                                        "totalFrames": total_frames,
+                                    }
+                                )
 
-                    frame_index += 1
+                        frame_index += 1
 
-                success = True
-            finally:
-                cap.release()
-                finalize(success=success)
+                    success = True
+                finally:
+                    cap.release()
+                    finalize(success=success)
 
             validation_result = self.storage_manager.validate_video_file(output_path, check_frames=False)
             export_duration = int(time.time() - export_start)

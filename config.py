@@ -23,7 +23,6 @@ HTTP 回调兼容配置：
 """
 import logging
 import os
-import torch
 from dotenv import load_dotenv
 
 # 加载环境变量（从项目根目录的 .env 文件）
@@ -264,6 +263,8 @@ class Config:
         # 如果用户指定了设备，直接使用
         if preferred_device:
             return preferred_device
+
+        import torch
 
         # 按优先级自动选择
         if torch.cuda.is_available():

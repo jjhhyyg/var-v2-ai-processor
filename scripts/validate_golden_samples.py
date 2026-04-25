@@ -13,13 +13,15 @@ if str(AI_PROCESSOR_ROOT) not in sys.path:
     sys.path.insert(0, str(AI_PROCESSOR_ROOT))
 
 from analyzer.anomaly_event_generator import AnomalyEventGenerator  # noqa: E402
+from analyzer.onnx_detector import ONNXDetector  # noqa: E402
 from analyzer.yolo_tracker import YOLOTracker  # noqa: E402
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Validate YOLO-only output against golden samples.")
     parser.add_argument("--samples", required=True, help="Directory containing sample_*.mp4 and sample_*.json")
-    parser.add_argument("--model", required=True, help="Path to best.pt")
+    parser.add_argument("--model", required=True, help="Path to best.pt or best.onnx")
+    parser.add_argument("--backend", choices=["pt", "onnx"], default="pt")
     parser.add_argument("--device", default="", help="Torch device override")
     parser.add_argument("--confidence", type=float, default=0.5)
     parser.add_argument("--iou", type=float, default=0.45)
@@ -38,7 +40,13 @@ def load_annotation(path: Path) -> Dict[str, Any]:
     return data
 
 
-def run_detection(detector: YOLOTracker, video_path: Path, fps: float, confidence: float, iou: float):
+def create_detector(args):
+    if args.backend == "onnx":
+        return ONNXDetector(args.model, device=args.device)
+    return YOLOTracker(args.model, device=args.device)
+
+
+def run_detection(detector, video_path: Path, fps: float, confidence: float, iou: float):
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise ValueError(f"无法打开视频: {video_path}")
@@ -98,7 +106,7 @@ def compare_events(sample_name: str, expected: List[Dict[str, Any]], actual: Lis
 def main() -> int:
     args = parse_args()
     samples_dir = Path(args.samples)
-    detector = YOLOTracker(args.model, device=args.device)
+    detector = create_detector(args)
     all_failures = []
 
     for annotation_path in sorted(samples_dir.glob("*.json")):

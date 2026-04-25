@@ -1,11 +1,9 @@
 from .video_processor import VideoAnalyzer
-from .yolo_tracker import YOLOTracker
 from .metrics_calculator import MetricsCalculator
 from .anomaly_event_generator import AnomalyEventGenerator
 
 __all__ = [
     'VideoAnalyzer',
-    'YOLOTracker',
     'MetricsCalculator',
     'AnomalyEventGenerator'
 ]

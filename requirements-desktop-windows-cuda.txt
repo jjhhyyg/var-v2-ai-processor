@@ -3,6 +3,8 @@
 # conda install -n var-env pytorch torchvision pytorch-cuda=12.4 -c pytorch -c nvidia
 
 ultralytics>=8.3.156
+onnx==1.21.0
+onnxruntime-gpu==1.25.0
 opencv-python>=4.10.0
 numpy>=2.0.0
 scipy>=1.13.0
