@@ -2,24 +2,22 @@
 AI处理模块配置文件
 
 环境变量配置说明：
-所有配置项都可以通过环境变量覆盖，环境变量在 codes/.env 文件中定义。
+所有配置项都可以通过环境变量覆盖，环境变量在仓库根目录 .env 文件中定义。
 
 核心配置：
 - AI_LOG_LEVEL: 日志级别（默认：INFO）支持：DEBUG, INFO, WARNING, ERROR, CRITICAL
 - AI_DEBUG: 是否启用算法调试输出（默认：False）
 
-YOLO模型配置：
-- YOLO_MODEL_PATH: 模型文件路径（默认：weights/best.pt）
-- YOLO_DEVICE: 计算设备（默认：''，自动选择，优先级：CUDA > MPS > CPU）
+ONNX 模型配置：
+- YOLO_MODEL_PATH: 模型文件路径（默认：weights/best.onnx）
 - DEFAULT_CONFIDENCE_THRESHOLD: 默认置信度阈值（默认：0.5）
 - DEFAULT_IOU_THRESHOLD: 默认IOU阈值（默认：0.45）
 
 存储路径配置：
 - STORAGE_BASE_PATH: 基础存储目录（默认：storage，相对于codes/目录）
-- STORAGE_*_SUBDIR: 各子目录名称（推荐使用 get_storage_path() 方法获取完整路径）
-
-HTTP 回调兼容配置：
-- BACKEND_BASE_URL: 兼容 HTTP 回调路径的基础 URL（默认：http://localhost:8080）；桌面端 stdout:// 路径不会依赖它
+- STORAGE_PREPROCESSED_VIDEOS_SUBDIR: 预处理输出子目录（默认：output）
+- STORAGE_DETECTION_RESULTS_SUBDIR: 检测结果输出子目录（默认：output）
+- DETECTION_RESULTS_FILENAME_TEMPLATE: 检测结果文件名（默认：detections.json）
 """
 import logging
 import os
@@ -38,7 +36,7 @@ class Config:
     AI处理模块配置类
 
     所有配置项都可以通过环境变量覆盖。
-    推荐使用提供的类方法来获取路径和URL，而不是直接访问路径常量。
+    推荐使用提供的类方法来获取路径，而不是直接访问路径常量。
     """
 
     # ========================================
@@ -50,18 +48,9 @@ class Config:
     DEBUG = os.getenv('AI_DEBUG', os.getenv('DEBUG', 'False')).lower() in ('1', 'true', 'yes', 'on')
 
     # ========================================
-    # HTTP 回调兼容配置
-    # ========================================
-    # HTTP 回调兼容路径。桌面端使用 stdout://，不会依赖后端服务。
-    BACKEND_BASE_URL = os.getenv('BACKEND_BASE_URL', 'http://localhost:8080')
-
-    # ========================================
     # YOLO模型配置
     # ========================================
-    MODEL_PATH = os.getenv('YOLO_MODEL_PATH', 'weights/best.pt')  # 模型文件路径
-    # MODEL_VERSION 已弃用,现在从模型检查点文件动态读取
-    # MODEL_VERSION = os.getenv('YOLO_MODEL_VERSION', 'yolo11n')
-    DEVICE = os.getenv('YOLO_DEVICE', '')  # 计算设备（''=自动选择，优先级：CUDA > MPS > CPU）
+    MODEL_PATH = os.getenv('YOLO_MODEL_PATH', 'weights/best.onnx')  # 模型文件路径
 
     # ========================================
     # 默认检测参数
@@ -122,9 +111,6 @@ class Config:
     # 进度更新频率（每处理多少帧更新一次回调；桌面 stdout 链路另有时间节流）
     PROGRESS_UPDATE_INTERVAL = int(os.getenv('PROGRESS_UPDATE_INTERVAL', '1'))
 
-    # 是否显示YOLO详细输出（调试时启用）
-    VERBOSE = os.getenv('YOLO_VERBOSE', 'False').lower() == 'true'
-
     # ========================================
     # 存储路径配置（相对于 codes/ 目录）
     # ========================================
@@ -133,21 +119,18 @@ class Config:
     STORAGE_BASE_PATH = os.getenv('STORAGE_BASE_PATH', 'storage')
 
     # 子目录配置（推荐使用 get_storage_path(subdir) 方法获取完整路径）
-    STORAGE_VIDEOS_SUBDIR = os.getenv('STORAGE_VIDEOS_SUBDIR', 'videos')
-    STORAGE_RESULT_VIDEOS_SUBDIR = os.getenv('STORAGE_RESULT_VIDEOS_SUBDIR', 'result_videos')
-    STORAGE_PREPROCESSED_VIDEOS_SUBDIR = os.getenv('STORAGE_PREPROCESSED_VIDEOS_SUBDIR', 'preprocessed_videos')
-    STORAGE_DETECTION_RESULTS_SUBDIR = os.getenv('STORAGE_DETECTION_RESULTS_SUBDIR', 'detection_results')
-    DETECTION_RESULTS_FILENAME_TEMPLATE = os.getenv('DETECTION_RESULTS_FILENAME_TEMPLATE', '{task_id}_detections.json')
-
-    # 完整路径（⚠️ 已废弃，保留用于向后兼容，请使用 get_storage_path() 方法）
-    RESULT_VIDEO_PATH = os.getenv('RESULT_VIDEO_PATH', './storage/result_videos')
-    PREPROCESSED_VIDEO_PATH = os.getenv('PREPROCESSED_VIDEO_PATH', './storage/preprocessed_videos')
+    STORAGE_PREPROCESSED_VIDEOS_SUBDIR = os.getenv('STORAGE_PREPROCESSED_VIDEOS_SUBDIR', 'output')
+    STORAGE_DETECTION_RESULTS_SUBDIR = os.getenv('STORAGE_DETECTION_RESULTS_SUBDIR', 'output')
+    DETECTION_RESULTS_FILENAME_TEMPLATE = os.getenv('DETECTION_RESULTS_FILENAME_TEMPLATE', 'detections.json')
 
     # ========================================
     # 外部二进制配置
     # ========================================
     FFMPEG_BIN = os.getenv('FFMPEG_BIN', 'ffmpeg')
     FFPROBE_BIN = os.getenv('FFPROBE_BIN', 'ffprobe')
+    GPU_PREPROCESSOR_BIN = os.getenv('GPU_PREPROCESSOR_BIN', '')
+    VAR_VIDEO_ANALYZER_BIN = os.getenv('VAR_VIDEO_ANALYZER_BIN', '')
+    USE_CPP_VIDEO_ANALYZER = os.getenv('USE_CPP_VIDEO_ANALYZER', '1').lower() not in ('0', 'false', 'no', 'off')
 
     # ========================================
     # 内部路径常量（不建议直接使用）
@@ -161,50 +144,21 @@ class Config:
     # ========================================
 
     @classmethod
-    def get_callback_url(cls, task_id, endpoint='progress'):
-        """
-        获取 HTTP 回调 URL。桌面端 stdout:// 路径不会调用该方法。
-        
-        Args:
-            task_id: 任务ID
-            endpoint: 端点类型，可选 'progress' 或 'result'
-            
-        Returns:
-            完整的回调URL
-            
-        Example:
-            >>> Config.get_callback_url(123, 'progress')
-            'http://localhost:8080/api/tasks/123/progress'
-        """
-        if endpoint == 'progress':
-            return f"{cls.BACKEND_BASE_URL}/api/tasks/{task_id}/progress"
-        elif endpoint == 'result':
-            return f"{cls.BACKEND_BASE_URL}/api/tasks/{task_id}/result"
-        else:
-            raise ValueError(f"Unknown endpoint: {endpoint}")
-    
-    @classmethod
     def get_storage_path(cls, subdir: str = '') -> str:
         """
         获取存储路径（绝对路径）- 推荐使用此方法代替直接使用路径常量
 
         Args:
             subdir: 子目录名称，支持：
-                - 'videos': 原始上传视频
-                - 'result_videos': 带标注的结果视频
-                - 'preprocessed_videos': 预处理后的视频
-                - 'detection_results': YOLO 检测结果 JSON 文件
+                - 'output': 预处理视频和检测结果
                 - 或任意自定义子目录名称
 
         Returns:
             绝对路径（规范化后）
 
         Examples:
-            >>> Config.get_storage_path('videos')
-            '/path/to/codes/storage/videos'
-
-            >>> Config.get_storage_path('detection_results')
-            '/path/to/codes/storage/detection_results'
+            >>> Config.get_storage_path('output')
+            '/path/to/codes/storage/output'
 
             >>> Config.get_storage_path()
             '/path/to/codes/storage'
@@ -246,39 +200,6 @@ class Config:
         if not os.path.isabs(absolute_path):
             return absolute_path
         return os.path.relpath(absolute_path, cls.CODES_DIR)
-
-    @staticmethod
-    def auto_select_device(preferred_device: str = '') -> str:
-        """
-        自动选择PyTorch设备，优先级：CUDA > MPS > CPU
-
-        Args:
-            preferred_device: 用户指定的设备（可选）
-                - 如果指定了具体设备（如'cuda', 'mps', 'cpu'），则使用指定设备
-                - 如果为空字符串，则按优先级自动选择
-
-        Returns:
-            设备字符串 ('cuda', 'mps', 或 'cpu')
-        """
-        # 如果用户指定了设备，直接使用
-        if preferred_device:
-            return preferred_device
-
-        import torch
-
-        # 按优先级自动选择
-        if torch.cuda.is_available():
-            device = 'cuda'
-            device_name = torch.cuda.get_device_name(0)
-            logger.info("使用 CUDA 设备: %s", device_name)
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-            device = 'mps'
-            logger.info("使用 Apple MPS (Metal Performance Shaders) 设备")
-        else:
-            device = 'cpu'
-            logger.info("使用 CPU 设备")
-
-        return device
 
     @classmethod
     def get_detection_results_path(cls, task_id: int) -> str:

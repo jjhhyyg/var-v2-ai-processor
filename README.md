@@ -7,9 +7,10 @@
 ## Responsibilities
 
 - Read job JSON files created by the Tauri/Rust desktop core
-- Run video preprocessing, YOLO detect-only detection, and result video export
+- Call `var-gpu-preprocessor` to create the preprocessed video
+- Call `var-video-analyzer` with `best.onnx` and ONNX Runtime CUDA EP to emit per-frame detections
+- Generate anomaly events, dynamic metrics, and result summaries in Python
 - Report status, progress, model version, and generated file paths through stdout NDJSON events
-- Provide the worker entrypoint and minimal dependency files for macOS desktop packaging
 
 ## Entrypoint
 
@@ -23,28 +24,29 @@ The desktop app normally creates the job file and launches the worker from `fron
 ## Dependencies
 
 ```bash
-pip install -r requirements-desktop-macos.txt
-pip install -r requirements.txt
+pip install -r requirements-desktop-windows-cuda.txt
 ```
+
+The Windows worker package is built by `frontend/scripts/build-desktop-worker.mjs`, which creates and maintains `frontend/.desktop-worker-venv` with only the lightweight worker dependencies. ONNX export still uses `TAURI_ONNX_EXPORT_PYTHON` / `TAURI_WORKER_PYTHON` / conda `var-env` with `torch + ultralytics`.
 
 ## Model Weights
 
-Model weights are not committed to Git. The default build script reads `weights/best.pt`; place that file locally or set `YOLO_MODEL_PATH` to another local model path.
+Model weights are not committed to Git. The source model is `weights/best.pt`; the first step of the Windows runtime build runs `npm run desktop:export-onnx` to create `weights/best.onnx`. Runtime analysis uses `best.onnx` only and no longer has a Python PT/ONNX fallback.
 
 ## Key Files
 
 - `desktop_worker.py`: desktop worker entrypoint
-- `analyzer/video_processor.py`: preprocessing, detection, and result export flow
-- `preprocessor/video_preprocessor.py`: video preprocessing
-- `utils/callback.py`: stdout/HTTP callback abstraction; desktop uses `stdout://`
-- `requirements-desktop-macos.txt`: minimal macOS worker dependencies
+- `analyzer/video_processor.py`: GPU preprocessing sidecar, C++ ONNX analyzer, event generation, and result aggregation
+- `utils/callback.py`: stdout event emission for the desktop worker
+- `requirements-desktop-windows-cuda.txt`: minimal Windows worker dependencies
 
 ## Testing
 
 - `python3 -m py_compile desktop_worker.py utils/callback.py analyzer/video_processor.py`
 - `python desktop_worker.py --self-check`
-- Import and analyze a real video from the macOS desktop UI
+- `desktop_worker.py --self-check --backend cpp-onnx --model weights/best.onnx`
+- Import the Windows runtime zip, then import and analyze a real video from the desktop UI
 
 ## Note
 
-`BackendCallback` still keeps the HTTP callback branch to reduce risk in the analysis pipeline. The current desktop path uses `stdout://` and does not depend on the legacy backend service.
+`BackendCallback` emits desktop NDJSON events through `stdout://` and does not depend on a legacy backend service. The default flow no longer creates `result.mp4`; the desktop app plays the original/preprocessed video and overlays bboxes from `output/detections.json`.

@@ -1,13 +1,7 @@
-# Windows desktop CUDA packaging dependencies.
-# Install PyTorch with conda first, e.g.:
-# conda install -n var-env pytorch torchvision pytorch-cuda=12.4 -c pytorch -c nvidia
+# Windows desktop CUDA worker dependencies.
+# Detection is handled by the C++ ONNX CUDA sidecar. Run
+# `npm run desktop:export-onnx` from frontend/ when best.pt needs conversion.
 
-ultralytics>=8.3.156
-onnx==1.21.0
-onnxruntime-gpu==1.25.0
 opencv-python>=4.10.0
 numpy>=2.0.0
-scipy>=1.13.0
-pillow>=11.0.0
-requests>=2.32.0
 python-dotenv>=1.1.0

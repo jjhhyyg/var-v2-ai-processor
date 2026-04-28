@@ -6,7 +6,6 @@
 import cv2
 import numpy as np
 from typing import Dict, Any, Optional, List
-from scipy.fft import fft, fftfreq
 import logging
 
 logger = logging.getLogger(__name__)
@@ -211,8 +210,8 @@ class MetricsCalculator:
         windowed = detrended * window
 
         # 步骤3: 快速傅里叶变换 (FFT)
-        yf = fft(windowed)
-        xf = fftfreq(len(windowed), 1 / fps)[:len(windowed) // 2]
+        yf = np.fft.fft(windowed)
+        xf = np.fft.fftfreq(len(windowed), 1 / fps)[:len(windowed) // 2]
         power = 2.0 / len(windowed) * np.abs(yf[:len(windowed) // 2])
 
         if len(power) > 1:

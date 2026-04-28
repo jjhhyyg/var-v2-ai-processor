@@ -7,71 +7,20 @@ import cv2
 import time
 import logging
 import os
-import numpy as np
+import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from PIL import Image, ImageDraw, ImageFont
 
-from .detector_factory import create_detector
 from .metrics_calculator import MetricsCalculator
 from .anomaly_event_generator import AnomalyEventGenerator
 from utils.callback import BackendCallback
-from utils.video_storage import VideoStorageManager
-from utils.atomic_write import atomic_write_json, safe_read_json
+from utils.atomic_write import atomic_write_json
 from utils.performance_trace import PerformanceTrace
 from config import Config
-from preprocessor import OptimizedVideoPreprocessor
 
 logger = logging.getLogger(__name__)
-
-
-def cv2_add_chinese_text(img, text, position, font_size=20, color=(255, 255, 255)):
-    img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    draw = ImageDraw.Draw(img_pil)
-
-    font = None
-    try:
-        font_paths = [
-            "C:/Windows/Fonts/msyh.ttc",
-            "C:/Windows/Fonts/simhei.ttf",
-            "C:/Windows/Fonts/simsun.ttc",
-            "/System/Library/Fonts/PingFang.ttc",
-            "/System/Library/Fonts/STHeiti Medium.ttc",
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        ]
-
-        for font_path in font_paths:
-            if os.path.exists(font_path):
-                try:
-                    font = ImageFont.truetype(font_path, font_size)
-                    break
-                except Exception:
-                    continue
-
-        if font is None:
-            import platform
-
-            if platform.system() == "Windows":
-                for font_name in ("msyh.ttc", "simhei.ttf"):
-                    try:
-                        font = ImageFont.truetype(font_name, font_size)
-                        break
-                    except Exception:
-                        continue
-
-        if font is None:
-            font = ImageFont.load_default()
-    except Exception as e:
-        logger.warning("加载字体时发生异常: %s, 使用默认字体", e)
-        font = ImageFont.load_default()
-
-    color_rgb = (color[2], color[1], color[0])
-    draw.text(position, text, font=font, fill=color_rgb)
-    return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 
 
 class VideoAnalyzer:
@@ -79,15 +28,18 @@ class VideoAnalyzer:
 
     def __init__(self, model_path: str, device: str = ""):
         self.model_path = model_path
-        self.yolo_tracker = create_detector(model_path, device)
-        self.device = getattr(self.yolo_tracker, "device", "")
+        self.requested_device = device
+        self.device = ""
         self.performance_trace = PerformanceTrace()
         self._last_analyzed_frame_count = 0
-        self._attach_performance_trace()
         self.metrics_calculator = MetricsCalculator()
         self._is_cleaned_up = False
-        self.preprocessor = OptimizedVideoPreprocessor()
-        self.storage_manager = VideoStorageManager()
+
+        if not self._should_use_cpp_video_analyzer():
+            raise RuntimeError("Windows CUDA worker requires best.onnx and C++ ONNX GPU analyzer sidecar")
+
+        self.device = "cuda"
+        logger.info("VideoAnalyzer initialized in C++ ONNX CUDA sidecar mode")
 
         logger.info("VideoAnalyzer initialized with device: %s", self.device)
 
@@ -112,9 +64,9 @@ class VideoAnalyzer:
         final_video_path = None
         preprocessing_duration = 0
         preprocessing_average_fps: Optional[float] = None
+        preprocessing_benchmark: Optional[Dict[str, Any]] = None
         self.performance_trace = PerformanceTrace()
         self._last_analyzed_frame_count = 0
-        self._attach_performance_trace()
 
         try:
             all_metrics: List[Dict[str, Any]] = []
@@ -128,7 +80,8 @@ class VideoAnalyzer:
                     preprocessing_strength,
                     preprocessing_enhance_pool,
                 )
-                callback.notify_preprocessing(f"正在预处理视频（强度：{preprocessing_strength}）...")
+                if not callback.notify_preprocessing(f"正在预处理视频（强度：{preprocessing_strength}）..."):
+                    raise RuntimeError("worker stdout 已关闭，停止视频预处理")
 
                 if preprocessed_output_path:
                     preprocessed_video_path = preprocessed_output_path
@@ -159,25 +112,25 @@ class VideoAnalyzer:
                         }
                     )
 
-                self.preprocessor.process_video(
+                preprocessing_benchmark = self._run_gpu_preprocessor(
                     input_path=Config.resolve_path(video_path),
                     output_path=preprocessed_video_path,
                     frame_rate=frame_rate,
-                    strength=preprocessing_strength,
-                    enhance_pool=preprocessing_enhance_pool,
-                    progress_callback=preprocessing_progress_callback,
+                    callback=callback,
                 )
                 preprocessing_elapsed = time.time() - preprocessing_start
                 preprocessing_duration = int(preprocessing_elapsed)
 
                 if callback.is_stdout_mode():
-                    callback.emit_event(
+                    if not callback.emit_event(
                         "preprocessed_video_ready",
                         {"path": os.path.abspath(preprocessed_video_path)},
-                    )
+                    ):
+                        raise RuntimeError("worker stdout 已关闭，无法通知预处理视频已生成")
 
             logger.info("Task %s: Reading video metadata", task_id)
-            callback.notify_preprocessing("正在读取视频元数据...")
+            if not callback.notify_preprocessing("正在读取视频元数据..."):
+                raise RuntimeError("worker stdout 已关闭，停止视频分析")
 
             final_video_path = preprocessed_video_path if enable_preprocessing else Config.resolve_path(preprocessed_video_path)
             cap = cv2.VideoCapture(final_video_path)
@@ -188,8 +141,13 @@ class VideoAnalyzer:
             fps = frame_rate
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            if enable_preprocessing and preprocessing_duration > 0:
-                preprocessing_average_fps = round(total_frames / preprocessing_duration, 3)
+            if enable_preprocessing:
+                if preprocessing_benchmark:
+                    total_fps = preprocessing_benchmark.get("totalFps")
+                    if isinstance(total_fps, (int, float)):
+                        preprocessing_average_fps = round(float(total_fps), 3)
+                elif preprocessing_duration > 0:
+                    preprocessing_average_fps = round(total_frames / preprocessing_duration, 3)
 
             logger.info(
                 "Task %s: Video info - %s frames, %s fps, %sx%s",
@@ -201,70 +159,75 @@ class VideoAnalyzer:
             )
 
             logger.info("Task %s: Starting detect-only analysis", task_id)
-            callback.notify_analyzing_start(total_frames, preprocessing_duration)
+            if not callback.notify_analyzing_start(total_frames, preprocessing_duration):
+                raise RuntimeError("worker stdout 已关闭，停止视频分析")
 
             analyzing_start = time.time()
             frame_index = 0
+            detection_benchmark: Optional[Dict[str, Any]] = None
 
             self.metrics_calculator.reset()
+            use_cpp_video_analyzer = self._should_use_cpp_video_analyzer()
+            detections_file = Path(Config.get_detection_results_path(task_id))
+            detections_file.parent.mkdir(parents=True, exist_ok=True)
 
-            while cap.isOpened():
-                with self.performance_trace.measure("videoRead"):
-                    ret, frame = cap.read()
-                if not ret:
-                    break
-
-                timestamp = frame_index / fps
-                with self.performance_trace.measure("detectorTotal"):
-                    detections = self.yolo_tracker.detect_frame(
-                        frame,
-                        conf=confidence_threshold,
-                        iou=iou_threshold,
-                    )
-                all_detections.append(detections)
-
-                if enable_dynamic_metrics:
-                    with self.performance_trace.measure("metrics"):
-                        metrics = self.metrics_calculator.calculate_metrics(frame_index, timestamp, frame)
-                    all_metrics.append(metrics)
-
-                processed_count = frame_index + 1
-                if processed_count % Config.PROGRESS_UPDATE_INTERVAL == 0:
-                    analyzing_elapsed = int(time.time() - analyzing_start)
-                    total_elapsed = preprocessing_duration + analyzing_elapsed
-                    is_timeout = total_elapsed > timeout_threshold
-                    timeout_warning = total_elapsed > (timeout_threshold * 0.8)
-                    progress = processed_count / total_frames if total_frames > 0 else 0
-
-                    with self.performance_trace.measure("progressEmit"):
-                        callback.update_progress(
-                            {
-                                "status": "ANALYZING",
-                                "phase": "视频分析中",
-                                "progress": round(progress, 4),
-                                "currentFrame": frame_index,
-                                "totalFrames": total_frames,
-                                "preprocessingDuration": preprocessing_duration,
-                                "analyzingElapsedTime": analyzing_elapsed,
-                                "isTimeout": is_timeout,
-                                "timeoutWarning": timeout_warning,
-                            }
-                        )
-
-                frame_index += 1
+            if not use_cpp_video_analyzer:
+                raise RuntimeError("Python ONNX/PT fallback has been removed; C++ ONNX GPU analyzer is required")
 
             cap.release()
+            cpp_result = self._run_cpp_video_analyzer(
+                input_path=final_video_path,
+                output_detections_path=str(detections_file),
+                confidence_threshold=confidence_threshold,
+                iou_threshold=iou_threshold,
+                callback=callback,
+                preprocessing_duration=preprocessing_duration,
+                timeout_threshold=timeout_threshold,
+                total_frames=total_frames,
+                started_at=analyzing_start,
+            )
+            all_detections = cpp_result["detections"]
+            detection_benchmark = cpp_result.get("detectionBenchmark")
+            frame_index = len(all_detections)
+
+            if enable_dynamic_metrics:
+                cap = cv2.VideoCapture(final_video_path)
+                if not cap.isOpened():
+                    raise ValueError(f"Cannot reopen video file for metrics: {final_video_path}")
+                metric_frame_index = 0
+                while cap.isOpened():
+                    with self.performance_trace.measure("videoRead"):
+                        ret, frame = cap.read()
+                    if not ret:
+                        break
+                    timestamp = metric_frame_index / fps
+                    with self.performance_trace.measure("metrics"):
+                        metrics = self.metrics_calculator.calculate_metrics(metric_frame_index, timestamp, frame)
+                    all_metrics.append(metrics)
+                    metric_frame_index += 1
+                cap.release()
+
+            if detection_benchmark:
+                total_fps = detection_benchmark.get("totalFps")
+                if isinstance(total_fps, (int, float)):
+                    detection_average_fps = round(float(total_fps), 3)
+                else:
+                    detection_average_fps = None
+            else:
+                detection_average_fps = None
+
             self._last_analyzed_frame_count = frame_index
 
             analyzing_elapsed_seconds = time.time() - analyzing_start
             analyzing_duration = int(analyzing_elapsed_seconds)
             total_duration = preprocessing_duration + analyzing_duration
             is_timeout = total_duration > timeout_threshold
-            detection_average_fps = (
-                round(frame_index / analyzing_elapsed_seconds, 3)
-                if analyzing_elapsed_seconds > 0
-                else None
-            )
+            if detection_average_fps is None:
+                detection_average_fps = (
+                    round(frame_index / analyzing_elapsed_seconds, 3)
+                    if analyzing_elapsed_seconds > 0
+                    else None
+                )
 
             logger.info(
                 "Task %s: Detect-only analysis completed - frames=%s, analyzing=%ss, timeout=%s",
@@ -284,8 +247,6 @@ class VideoAnalyzer:
                 anomaly_events = anomaly_generator.generate_events(all_detections)
             logger.info("Task %s: Generated %s anomaly events", task_id, len(anomaly_events))
 
-            detections_file = Path(Config.get_detection_results_path(task_id))
-            detections_file.parent.mkdir(parents=True, exist_ok=True)
             with self.performance_trace.measure("detectionsPersist"):
                 atomic_write_json(
                     str(detections_file),
@@ -310,7 +271,9 @@ class VideoAnalyzer:
                     "defectDetectionAverageFps": detection_average_fps,
                     "preprocessingDurationSeconds": preprocessing_duration,
                     "defectDetectionDurationSeconds": analyzing_duration,
-                    "detectionBackend": self._detection_backend(),
+                    "detectionBackend": self._detection_backend(use_cpp_video_analyzer),
+                    "preprocessingBenchmark": preprocessing_benchmark,
+                    "detectionBenchmark": detection_benchmark,
                     "timingSummary": self.get_timing_summary(),
                 },
                 "dynamicMetrics": all_metrics,
@@ -319,7 +282,8 @@ class VideoAnalyzer:
             }
 
             with self.performance_trace.measure("resultEmit"):
-                callback.submit_result(result_data)
+                if not callback.submit_result(result_data):
+                    raise RuntimeError("worker stdout 已关闭，无法提交分析结果")
             logger.info("Task %s: Result submitted successfully", task_id)
             return result_status, final_video_path
 
@@ -331,61 +295,384 @@ class VideoAnalyzer:
                 logger.error("Task %s: Failed to submit error result: %s", task_id, submit_error)
             return "FAILED", final_video_path if final_video_path else Config.resolve_path(video_path)
 
-    def _attach_performance_trace(self) -> None:
-        if hasattr(self.yolo_tracker, "set_performance_trace"):
-            self.yolo_tracker.set_performance_trace(self.performance_trace)
+    def _terminate_sidecar(self, process: subprocess.Popen, label: str, reason: str) -> None:
+        if process.poll() is not None:
+            return
+        logger.error("%s: terminating sidecar because %s", label, reason)
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except Exception:
+            logger.exception("%s: graceful sidecar termination failed; killing", label)
+            try:
+                process.kill()
+                process.wait(timeout=5)
+            except Exception:
+                logger.exception("%s: forced sidecar kill failed", label)
+
+    def _ensure_detector(self):
+        raise RuntimeError("Python ONNX/PT fallback has been removed; C++ ONNX GPU analyzer is required")
+
+    def _resolve_gpu_preprocessor_bin(self) -> str:
+        configured = getattr(Config, "GPU_PREPROCESSOR_BIN", "")
+        if configured:
+            resolved = Config.resolve_path(configured)
+            if os.path.exists(resolved):
+                return resolved
+            if os.path.exists(configured):
+                return configured
+
+        exe_name = "var-gpu-preprocessor.exe" if os.name == "nt" else "var-gpu-preprocessor"
+        candidates: List[Path] = []
+
+        executable_path = Path(getattr(sys, "executable", "")).resolve()
+        if executable_path.name:
+            for parent in [executable_path.parent, *executable_path.parents]:
+                candidates.append(parent / "tools" / exe_name)
+                candidates.append(parent.parent / "tools" / exe_name)
+
+        module_path = Path(__file__).resolve()
+        for parent in [module_path.parent, *module_path.parents]:
+            candidates.append(parent / "tools" / exe_name)
+            candidates.append(parent / "frontend" / "src-tauri" / "resources" / "runtime" / "windows-x64" / "tools" / exe_name)
+
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+
+        raise FileNotFoundError(
+            "未找到 GPU 预处理 sidecar var-gpu-preprocessor.exe；"
+            "请先运行 npm run desktop:build-gpu-sidecars，或设置 GPU_PREPROCESSOR_BIN"
+        )
+
+    def _run_gpu_preprocessor(
+        self,
+        input_path: str,
+        output_path: str,
+        frame_rate: float,
+        callback: BackendCallback,
+    ) -> Dict[str, Any]:
+        sidecar_bin = self._resolve_gpu_preprocessor_bin()
+        command = [
+            sidecar_bin,
+            "--input",
+            input_path,
+            "--output",
+            output_path,
+            "--fps",
+            str(frame_rate),
+        ]
+        logger.info("Running GPU preprocessor sidecar: %s", command)
+
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=creationflags,
+        )
+
+        benchmark: Optional[Dict[str, Any]] = None
+        diagnostic_lines: List[str] = []
+
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                diagnostic_lines.append(line)
+                logger.warning("GPU preprocessor emitted non-JSON stdout: %s", line)
+                continue
+
+            event_type = event.get("type")
+            if event_type == "progress":
+                current_frame = int(event.get("currentFrame") or 0)
+                total_frames = int(event.get("totalFrames") or 0)
+                elapsed_seconds = float(event.get("elapsedSeconds") or 0.0)
+                progress = current_frame / total_frames if total_frames > 0 else 0.0
+                emitted = callback.update_progress(
+                    {
+                        "status": "PREPROCESSING",
+                        "phase": "GPU 预处理视频中",
+                        "progress": round(progress, 4),
+                        "currentFrame": current_frame,
+                        "totalFrames": total_frames,
+                        "preprocessingDuration": int(elapsed_seconds),
+                    }
+                )
+                if not emitted:
+                    self._terminate_sidecar(process, "GPU preprocessor", "worker stdout is closed")
+                    raise RuntimeError("worker stdout 已关闭，已终止 GPU 预处理 sidecar")
+            elif event_type == "result":
+                raw_benchmark = event.get("preprocessingBenchmark")
+                if isinstance(raw_benchmark, dict):
+                    benchmark = self._normalize_preprocessing_benchmark(raw_benchmark)
+            elif event_type == "self_check":
+                if not event.get("ok", False):
+                    logger.error("GPU preprocessor self-check failed: %s", event)
+            elif event_type == "error":
+                logger.error("GPU preprocessor error event: %s", event)
+            else:
+                logger.debug("GPU preprocessor event: %s", event)
+
+        return_code = process.wait()
+        if diagnostic_lines:
+            logger.error("GPU preprocessor diagnostics: %s", "\n".join(diagnostic_lines))
+
+        if return_code != 0:
+            detail = f"；diagnostics: {' | '.join(diagnostic_lines[-5:])}" if diagnostic_lines else ""
+            raise RuntimeError(f"GPU 预处理失败，sidecar 退出码 {return_code}{detail}")
+
+        if benchmark is None:
+            raise RuntimeError("GPU 预处理失败：sidecar 未输出 preprocessingBenchmark")
+
+        if not os.path.exists(output_path):
+            raise RuntimeError(f"GPU 预处理失败：输出视频不存在 {output_path}")
+
+        return benchmark
+
+    def _normalize_preprocessing_benchmark(self, benchmark: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = dict(benchmark)
+        total_frames = int(normalized.get("totalFrames") or 0)
+
+        aliases = {
+            "decodeDurationSeconds": "gpuDecodeDurationSeconds",
+            "frameProcessingDurationSeconds": "gpuProcessingDurationSeconds",
+            "encodeDurationSeconds": "gpuEncodeDurationSeconds",
+        }
+        for target_key, source_key in aliases.items():
+            if target_key not in normalized and source_key in normalized:
+                normalized[target_key] = float(normalized.get(source_key) or 0.0)
+            normalized.pop(source_key, None)
+
+        normalized.setdefault("decodeDurationSeconds", 0.0)
+        normalized.setdefault("frameProcessingDurationSeconds", 0.0)
+        normalized.setdefault("encodeDurationSeconds", 0.0)
+        normalized.setdefault("otherDurationSeconds", 0.0)
+
+        average_fields = {
+            "decodeAverageMs": "decodeDurationSeconds",
+            "frameProcessingAverageMs": "frameProcessingDurationSeconds",
+            "encodeAverageMs": "encodeDurationSeconds",
+        }
+        for average_key, duration_key in average_fields.items():
+            if average_key not in normalized:
+                duration_seconds = float(normalized.get(duration_key) or 0.0)
+                normalized[average_key] = (duration_seconds * 1000.0 / total_frames) if total_frames > 0 else 0.0
+
+        return normalized
+
+    def _should_use_cpp_video_analyzer(self) -> bool:
+        if not getattr(Config, "USE_CPP_VIDEO_ANALYZER", False):
+            return False
+        return str(self.model_path).lower().endswith(".onnx")
+
+    def _resolve_var_video_analyzer_bin(self) -> str:
+        configured = getattr(Config, "VAR_VIDEO_ANALYZER_BIN", "")
+        if configured:
+            resolved = Config.resolve_path(configured)
+            if os.path.exists(resolved):
+                return resolved
+            if os.path.exists(configured):
+                return configured
+
+        exe_name = "var-video-analyzer.exe" if os.name == "nt" else "var-video-analyzer"
+        candidates: List[Path] = []
+
+        executable_path = Path(getattr(sys, "executable", "")).resolve()
+        if executable_path.name:
+            for parent in [executable_path.parent, *executable_path.parents]:
+                candidates.append(parent / "tools" / exe_name)
+                candidates.append(parent.parent / "tools" / exe_name)
+
+        module_path = Path(__file__).resolve()
+        for parent in [module_path.parent, *module_path.parents]:
+            candidates.append(parent / "tools" / exe_name)
+            candidates.append(parent / "frontend" / "src-tauri" / "resources" / "runtime" / "windows-x64" / "tools" / exe_name)
+
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+
+        raise FileNotFoundError(
+            "未找到 C++ 视频分析 sidecar var-video-analyzer.exe；"
+            "请先运行 npm run desktop:build-gpu-sidecars，或设置 VAR_VIDEO_ANALYZER_BIN"
+        )
+
+    def _normalize_cpp_detection(self, detection: Dict[str, Any]) -> Dict[str, Any]:
+        bbox = detection.get("bbox") or detection.get("box")
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            raise ValueError(f"C++ analyzer 输出了无效 bbox: {detection}")
+
+        class_id = detection.get("class_id", detection.get("classId"))
+        class_name = detection.get("class_name", detection.get("className"))
+        x1, y1, x2, y2 = [float(value) for value in bbox]
+        return {
+            "class_id": int(class_id),
+            "class_name": str(class_name),
+            "bbox": [x1, y1, x2, y2],
+            "center_x": float(detection.get("center_x", (x1 + x2) / 2.0)),
+            "center_y": float(detection.get("center_y", (y1 + y2) / 2.0)),
+            "width": float(detection.get("width", x2 - x1)),
+            "height": float(detection.get("height", y2 - y1)),
+            "confidence": float(detection["confidence"]),
+        }
+
+    def _load_cpp_detections(self, output_path: str) -> List[List[Dict[str, Any]]]:
+        with open(output_path, "r", encoding="utf-8") as file:
+            raw_data = json.load(file)
+
+        if not isinstance(raw_data, list):
+            raise ValueError("C++ analyzer 检测结果不是 frame 列表")
+
+        normalized: List[List[Dict[str, Any]]] = []
+        for frame_detections in raw_data:
+            if not isinstance(frame_detections, list):
+                raise ValueError("C++ analyzer 检测结果包含无效 frame 项")
+            normalized.append([self._normalize_cpp_detection(item) for item in frame_detections])
+        return normalized
+
+    def _run_cpp_video_analyzer(
+        self,
+        input_path: str,
+        output_detections_path: str,
+        confidence_threshold: float,
+        iou_threshold: float,
+        callback: BackendCallback,
+        preprocessing_duration: int,
+        timeout_threshold: int,
+        total_frames: int,
+        started_at: float,
+    ) -> Dict[str, Any]:
+        sidecar_bin = self._resolve_var_video_analyzer_bin()
+        model_path = Config.resolve_path(str(self.model_path))
+        command = [
+            sidecar_bin,
+            "--input",
+            Config.resolve_path(input_path),
+            "--model",
+            model_path,
+            "--output-detections",
+            output_detections_path,
+            "--conf",
+            str(confidence_threshold),
+            "--iou",
+            str(iou_threshold),
+            "--progress-interval",
+            str(max(1, int(Config.PROGRESS_UPDATE_INTERVAL))),
+        ]
+        logger.info("Running C++ video analyzer sidecar: %s", command)
+
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=creationflags,
+        )
+
+        detection_benchmark: Optional[Dict[str, Any]] = None
+        diagnostic_lines: List[str] = []
+
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                diagnostic_lines.append(line)
+                logger.warning("C++ video analyzer emitted non-JSON stdout: %s", line)
+                continue
+
+            event_type = event.get("type")
+            if event_type == "progress":
+                current_frame = int(event.get("currentFrame") or 0)
+                analyzer_elapsed = float(event.get("elapsedSeconds") or (time.time() - started_at))
+                total_elapsed = preprocessing_duration + int(analyzer_elapsed)
+                progress = current_frame / total_frames if total_frames > 0 else 0.0
+                emitted = callback.update_progress(
+                    {
+                        "status": "ANALYZING",
+                        "phase": "C++ GPU 视频分析中",
+                        "progress": round(progress, 4),
+                        "currentFrame": current_frame,
+                        "totalFrames": total_frames,
+                        "preprocessingDuration": preprocessing_duration,
+                        "analyzingElapsedTime": int(analyzer_elapsed),
+                        "isTimeout": total_elapsed > timeout_threshold,
+                        "timeoutWarning": total_elapsed > (timeout_threshold * 0.8),
+                    }
+                )
+                if not emitted:
+                    self._terminate_sidecar(process, "C++ video analyzer", "worker stdout is closed")
+                    raise RuntimeError("worker stdout 已关闭，已终止 C++ 视频分析 sidecar")
+            elif event_type == "result":
+                raw_benchmark = event.get("detectionBenchmark")
+                if isinstance(raw_benchmark, dict):
+                    detection_benchmark = raw_benchmark
+            elif event_type == "error":
+                diagnostic_lines.append(json.dumps(event, ensure_ascii=False))
+                logger.error("C++ video analyzer error event: %s", event)
+            else:
+                logger.debug("C++ video analyzer event: %s", event)
+
+        return_code = process.wait()
+        if diagnostic_lines:
+            logger.error("C++ video analyzer diagnostics: %s", "\n".join(diagnostic_lines[-20:]))
+
+        if return_code != 0:
+            detail = f"；diagnostics: {' | '.join(diagnostic_lines[-5:])}" if diagnostic_lines else ""
+            raise RuntimeError(f"C++ GPU 视频分析失败，sidecar 退出码 {return_code}{detail}")
+
+        if detection_benchmark is None:
+            raise RuntimeError("C++ GPU 视频分析失败：sidecar 未输出 detectionBenchmark")
+
+        if not os.path.exists(output_detections_path):
+            raise RuntimeError(f"C++ GPU 视频分析失败：检测结果不存在 {output_detections_path}")
+
+        return {
+            "detections": self._load_cpp_detections(output_detections_path),
+            "detectionBenchmark": detection_benchmark,
+        }
 
     def get_timing_summary(self) -> Dict[str, Any]:
         return self.performance_trace.summary(self._last_analyzed_frame_count)
 
-    def _detection_backend(self) -> str:
-        if str(self.model_path).lower().endswith(".onnx"):
-            providers = getattr(self.yolo_tracker, "active_providers", [])
-            if "CUDAExecutionProvider" in providers:
-                return "onnxruntime-cuda"
-            return "onnxruntime-cpu"
+    def _detection_backend(self, use_cpp_video_analyzer: bool = False) -> str:
+        if use_cpp_video_analyzer:
+            return "onnxruntime-cuda-cpp"
 
-        device = str(self.device).lower()
-        if device.startswith("cuda") or device.isdigit():
-            return "pytorch-cuda"
-        if device.startswith("mps"):
-            return "pytorch-mps"
-        return "pytorch-cpu"
+        raise RuntimeError("C++ ONNX GPU analyzer is required")
 
     def get_info(self) -> Dict[str, Any]:
-        return {
-            "yolo_model": self.yolo_tracker.get_model_info(),
-            "device": str(self.device),
-        }
+        if self._should_use_cpp_video_analyzer():
+            return {
+                "yolo_model": {
+                    "backend": "onnxruntime-cuda-cpp",
+                    "model_path": str(self.model_path),
+                    "model_version": f"onnxruntime-cpp:{Path(self.model_path).name}",
+                },
+                "device": "cuda",
+            }
+
+        raise RuntimeError("C++ ONNX GPU analyzer is required")
 
     def cleanup(self):
         if self._is_cleaned_up:
             return
 
         try:
-            if hasattr(self, "yolo_tracker") and self.yolo_tracker is not None:
-                if hasattr(self.yolo_tracker, "cleanup"):
-                    self.yolo_tracker.cleanup()
-                    self._is_cleaned_up = True
-                    return
-
-                if hasattr(self.yolo_tracker, "model") and self.yolo_tracker.model is not None:
-                    try:
-                        import torch
-
-                        model_device = next(self.yolo_tracker.model.parameters()).device
-                        if model_device.type != "cpu":
-                            self.yolo_tracker.model.to("cpu")
-
-                        if self.device == "cuda" and torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        elif self.device == "mps" and hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
-                            torch.mps.empty_cache()
-                    except StopIteration:
-                        pass
-                    except Exception as e:
-                        logger.warning("Failed to clear device cache: %s", e, exc_info=False)
-
             self._is_cleaned_up = True
         except Exception as e:
             logger.error("Error during cleanup: %s", e)
@@ -396,141 +683,3 @@ class VideoAnalyzer:
                 self.cleanup()
             except Exception as e:
                 logger.error("Error in destructor cleanup: %s", e)
-
-    def export_annotated_video(
-        self,
-        task_id: int,
-        video_path: str,
-        output_path: str,
-        confidence_threshold: float = 0.5,
-        iou_threshold: float = 0.45,
-        callback_url: Optional[str] = None,
-        frame_rate: float = 25.0,
-        progress_status: str = "COMPLETED",
-    ) -> bool:
-        _ = confidence_threshold
-        _ = iou_threshold
-        callback = BackendCallback(task_id, callback_url)
-
-        try:
-            detections_file = Path(Config.get_detection_results_path(task_id))
-            if not detections_file.exists():
-                raise FileNotFoundError(f"Detection results not found: {detections_file}. Please run analyze_video_task first.")
-
-            all_detections = safe_read_json(str(detections_file), use_lock=True, lock_timeout=30.0)
-
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                raise ValueError(f"Cannot open video file: {video_path}")
-
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = frame_rate
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-            if len(all_detections) != total_frames:
-                logger.warning(
-                    "Task %s: Frame count mismatch - video has %s frames, detections have %s frames",
-                    task_id,
-                    total_frames,
-                    len(all_detections),
-                )
-
-            estimate_size_mb = self.storage_manager.estimate_video_size(width, height, total_frames, fps)
-            out, actual_output_path, finalize = self.storage_manager.create_video_writer(
-                output_path,
-                fps,
-                width,
-                height,
-                estimate_size_mb=estimate_size_mb,
-            )
-            _ = actual_output_path
-
-            frame_index = 0
-            export_start = time.time()
-            success = False
-
-            with self.performance_trace.measure("resultVideoExport"):
-                try:
-                    while cap.isOpened():
-                        ret, frame = cap.read()
-                        if not ret:
-                            break
-
-                        detections = all_detections[frame_index] if frame_index < len(all_detections) else []
-                        annotated_frame = self._draw_detections(frame, detections)
-                        out.write(annotated_frame)
-
-                        if frame_index % Config.PROGRESS_UPDATE_INTERVAL == 0:
-                            progress = (frame_index + 1) / total_frames if total_frames > 0 else 0
-                            with self.performance_trace.measure("progressEmit"):
-                                callback.update_progress(
-                                    {
-                                        "status": progress_status,
-                                        "phase": "生成结果视频",
-                                        "progress": round(progress, 4),
-                                        "currentFrame": frame_index,
-                                        "totalFrames": total_frames,
-                                    }
-                                )
-
-                        frame_index += 1
-
-                    success = True
-                finally:
-                    cap.release()
-                    finalize(success=success)
-
-            validation_result = self.storage_manager.validate_video_file(output_path, check_frames=False)
-            export_duration = int(time.time() - export_start)
-            logger.info(
-                "Task %s: Export completed in %ss, output=%s, size=%.2fMB",
-                task_id,
-                export_duration,
-                output_path,
-                validation_result["size_mb"],
-            )
-            return True
-
-        except Exception as e:
-            logger.error("Task %s: Failed to export video: %s", task_id, e, exc_info=True)
-            return False
-
-    def _draw_detections(self, frame, detections: List[Dict[str, Any]]) -> Any:
-        annotated_frame = frame.copy()
-
-        colors = {
-            "熔池未到边": (0, 100, 0),
-            "电极粘连物": (0, 0, 255),
-            "锭冠": (255, 0, 0),
-            "辉光": (255, 255, 0),
-            "边弧（侧弧）": (128, 0, 128),
-            "爬弧": (0, 165, 255),
-        }
-
-        for det in detections:
-            x1, y1, x2, y2 = map(int, det["bbox"])
-            category = det.get("class_name", "Unknown")
-            confidence = det.get("confidence", 0.0)
-            color = colors.get(category, (0, 255, 0))
-
-            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-            label = f"{category} {confidence:.2f}"
-            text_bg_height = 25
-            text_bg_width = max(80, len(label) * 12)
-            cv2.rectangle(
-                annotated_frame,
-                (x1, y1 - text_bg_height),
-                (x1 + text_bg_width, y1),
-                color,
-                -1,
-            )
-            annotated_frame = cv2_add_chinese_text(
-                annotated_frame,
-                label,
-                (x1 + 2, y1 - text_bg_height + 2),
-                font_size=16,
-                color=(255, 255, 255),
-            )
-
-        return annotated_frame

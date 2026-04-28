@@ -19,7 +19,6 @@ STAGE_LABELS = {
     "eventGeneration": "事件生成",
     "detectionsPersist": "检测结果持久化",
     "resultEmit": "结果提交",
-    "resultVideoExport": "结果视频导出",
 }
 
 PERCENT_BASE_STAGES = {
@@ -30,7 +29,6 @@ PERCENT_BASE_STAGES = {
     "eventGeneration",
     "detectionsPersist",
     "resultEmit",
-    "resultVideoExport",
 }
 
 

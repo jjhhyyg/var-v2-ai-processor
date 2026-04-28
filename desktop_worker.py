@@ -3,7 +3,7 @@
 
 职责：
 1. 读取 Rust 侧写入的 job JSON
-2. 本地执行视频分析与结果视频导出
+2. 本地执行视频预处理、C++ ONNX 检测与结果汇总
 3. 通过 stdout 输出 NDJSON 事件流，供桌面端 Rust 核心消费
 """
 import os
@@ -15,6 +15,7 @@ os.environ.setdefault('ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS', '1')
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -25,12 +26,20 @@ LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 200
 
 
+def configure_stdio_protocol() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='backslashreplace', line_buffering=True)
+        except Exception:
+            pass
+
+
 def emit_event(event_type: str, payload: dict) -> None:
     # stdout is reserved for the Rust NDJSON protocol. Human-readable logs must use logging/stderr.
     print(json.dumps({
         'type': event_type,
         'payload': payload
-    }, ensure_ascii=False), flush=True)
+    }, ensure_ascii=True), flush=True)
 
 
 def configure_logging(log_path: str) -> None:
@@ -70,7 +79,7 @@ def load_job(job_path: str) -> dict:
 
 def run_self_check(args: list[str]) -> int:
     try:
-        backend = 'onnx'
+        backend = 'worker'
         model_path = None
         for index, arg in enumerate(args):
             if arg == '--backend' and index + 1 < len(args):
@@ -79,40 +88,24 @@ def run_self_check(args: list[str]) -> int:
                 model_path = args[index + 1]
 
         checks = {'backend': backend}
-        if backend == 'onnx':
-            import numpy as np
-            import onnxruntime as ort
-
-            try:
-                ort.preload_dlls()
-            except AttributeError:
-                pass
-
-            checks['onnxruntime'] = getattr(ort, '__version__', 'unknown')
-            checks['availableProviders'] = ort.get_available_providers()
-            require_cuda = os.getenv('ONNX_REQUIRE_CUDA', '1').lower() not in ('0', 'false', 'no', 'off')
-            if require_cuda and 'CUDAExecutionProvider' not in checks['availableProviders']:
-                raise RuntimeError(f"CUDAExecutionProvider unavailable: {checks['availableProviders']}")
-
-            if model_path:
-                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-                session = ort.InferenceSession(model_path, providers=providers)
-                checks['activeProviders'] = session.get_providers()
-                if require_cuda and 'CUDAExecutionProvider' not in checks['activeProviders']:
-                    raise RuntimeError(f"CUDAExecutionProvider not active: {checks['activeProviders']}")
-                input_meta = session.get_inputs()[0]
-                shape = [
-                    dim if isinstance(dim, int) and dim > 0 else fallback
-                    for dim, fallback in zip(input_meta.shape, [1, 3, 640, 1024])
-                ]
-                output = session.run(None, {input_meta.name: np.zeros(tuple(shape), dtype=np.float32)})
-                checks['inputShape'] = shape
-                checks['outputShapes'] = [list(item.shape) for item in output]
-
-        elif backend == 'pt':
-            import ultralytics
-
-            checks['ultralytics'] = getattr(ultralytics, '__version__', 'unknown')
+        if backend in ('onnx', 'cpp-onnx'):
+            if not model_path:
+                raise RuntimeError('C++ ONNX self-check requires --model')
+            analyzer_bin = os.getenv('VAR_VIDEO_ANALYZER_BIN', 'var-video-analyzer.exe' if os.name == 'nt' else 'var-video-analyzer')
+            result = subprocess.run(
+                [analyzer_bin, '--self-check-onnx', '--model', model_path],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            checks['varVideoAnalyzer'] = analyzer_bin
+            checks['stdout'] = result.stdout.strip()
+            if result.returncode != 0:
+                raise RuntimeError(f"var-video-analyzer self-check failed ({result.returncode}): {result.stderr.strip() or result.stdout.strip()}")
+        elif backend == 'worker':
+            import cv2  # noqa: F401
+            import numpy  # noqa: F401
         else:
             raise ValueError(f'未知 self-check backend: {backend}')
 
@@ -120,7 +113,7 @@ def run_self_check(args: list[str]) -> int:
         print(json.dumps({
             'status': 'ok',
             'checks': checks
-        }, ensure_ascii=False), flush=True)
+        }, ensure_ascii=True), flush=True)
         return 0
     except Exception:
         traceback.print_exc(file=sys.stderr)
@@ -152,8 +145,9 @@ def main() -> int:
             device=job.get('device', '')
         )
 
+        model_info = analyzer.get_info().get('yolo_model', {})
         emit_event('model_version', {
-            'modelVersion': analyzer.yolo_tracker.model_version
+            'modelVersion': model_info.get('model_version', Path(job['modelPath']).name)
         })
 
         status, analyzed_video_path = analyzer.analyze_video_task(
@@ -175,25 +169,9 @@ def main() -> int:
         logger.info("Task %s analysis finished with status=%s analyzed_video_path=%s", task_id, status, analyzed_video_path)
 
         if status in ['COMPLETED', 'COMPLETED_TIMEOUT']:
-            result_output_path = job['resultOutputPath']
-            success = analyzer.export_annotated_video(
-                task_id=task_id,
-                video_path=analyzed_video_path,
-                output_path=result_output_path,
-                confidence_threshold=float(config.get('confidenceThreshold', 0.5)),
-                iou_threshold=float(config.get('iouThreshold', 0.45)),
-                callback_url=BackendCallback.STDOUT_CALLBACK_URL,
-                frame_rate=float(config.get('frameRate', 25.0)),
-                progress_status=status,
-            )
-
-            if success:
-                emit_event('result_video_ready', {
-                    'path': str(Path(result_output_path).resolve())
-                })
-                emit_event('performance_trace', {
-                    'timingSummary': analyzer.get_timing_summary()
-                })
+            emit_event('performance_trace', {
+                'timingSummary': analyzer.get_timing_summary()
+            })
 
         return 0
     except Exception as exc:
@@ -213,4 +191,5 @@ def main() -> int:
 
 
 if __name__ == '__main__':
+    configure_stdio_protocol()
     raise SystemExit(main())

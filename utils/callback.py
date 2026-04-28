@@ -1,36 +1,35 @@
 """
-后端回调工具模块
-负责向后端发送进度更新和结果提交
+桌面 worker stdout 事件工具模块。
 """
 import json
 import logging
 import time
 from typing import Dict, Any, Optional
-from config import Config
 
 logger = logging.getLogger(__name__)
 
 
 class BackendCallback:
-    """后端回调工具类"""
+    """通过 stdout 输出桌面 NDJSON 事件。"""
 
     STDOUT_CALLBACK_URL = 'stdout://'
     STDOUT_PROGRESS_INTERVAL_SECONDS = 0.5
 
     def __init__(self, task_id: int, callback_url: Optional[str] = None):
         self.task_id = task_id
-        self.callback_url = callback_url or Config.BACKEND_BASE_URL
-        self.headers = {
-            'Content-Type': 'application/json'
-        }
+        self.callback_url = callback_url or self.STDOUT_CALLBACK_URL
         self._last_stdout_progress_emit_at: Optional[float] = None
         self._last_stdout_progress_signature: Optional[tuple[Optional[str], Optional[str], Optional[bool], Optional[bool]]] = None
+        self._stdout_failed = False
 
     def is_stdout_mode(self) -> bool:
         return self.callback_url == self.STDOUT_CALLBACK_URL
 
+    def stdout_available(self) -> bool:
+        return self.is_stdout_mode() and not self._stdout_failed
+
     def emit_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
-        if not self.is_stdout_mode():
+        if not self.stdout_available():
             return False
 
         try:
@@ -39,11 +38,12 @@ class BackendCallback:
                 json.dumps({
                     'type': event_type,
                     'payload': payload
-                }, ensure_ascii=False),
+                }, ensure_ascii=True),
                 flush=True
             )
             return True
         except Exception as e:
+            self._stdout_failed = True
             logger.error(f"Failed to emit stdout event for task {self.task_id}: {e}")
             return False
 
@@ -89,32 +89,18 @@ class BackendCallback:
         Returns:
             是否更新成功
         """
-        if self.is_stdout_mode():
-            if not self._should_emit_stdout_progress(progress_data):
-                return True
-
-            emitted = self.emit_event('progress', progress_data)
-            if emitted:
-                self._last_stdout_progress_emit_at = time.monotonic()
-                self._last_stdout_progress_signature = self._stdout_progress_signature(progress_data)
-            return emitted
-
-        url = f"{self.callback_url}/api/tasks/{self.task_id}/progress"
-
-        try:
-            import requests
-            response = requests.post(
-                url,
-                json=progress_data,
-                headers=self.headers,
-                timeout=10
-            )
-            response.raise_for_status()
-            logger.info(f"Progress updated for task {self.task_id}: {progress_data.get('progress', 0):.2%}")
-            return True
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to update progress for task {self.task_id}: {e}")
+        if not self.is_stdout_mode():
+            logger.error("Unsupported callback URL %s; desktop worker requires stdout://", self.callback_url)
             return False
+
+        if not self._should_emit_stdout_progress(progress_data):
+            return True
+
+        emitted = self.emit_event('progress', progress_data)
+        if emitted:
+            self._last_stdout_progress_emit_at = time.monotonic()
+            self._last_stdout_progress_signature = self._stdout_progress_signature(progress_data)
+        return emitted
 
     def submit_result(self, result_data: Dict[str, Any]) -> bool:
         """
@@ -137,25 +123,10 @@ class BackendCallback:
         Returns:
             是否提交成功
         """
-        if self.is_stdout_mode():
-            return self.emit_event('result', result_data)
-
-        url = f"{self.callback_url}/api/tasks/{self.task_id}/result"
-
-        try:
-            import requests
-            response = requests.post(
-                url,
-                json=result_data,
-                headers=self.headers,
-                timeout=30
-            )
-            response.raise_for_status()
-            logger.info(f"Result submitted for task {self.task_id}: {result_data.get('status')}")
-            return True
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to submit result for task {self.task_id}: {e}")
+        if not self.is_stdout_mode():
+            logger.error("Unsupported callback URL %s; desktop worker requires stdout://", self.callback_url)
             return False
+        return self.emit_event('result', result_data)
 
     def notify_preprocessing(self, message: str = "正在预处理视频...") -> bool:
         """通知预处理阶段"""

@@ -1,65 +1,50 @@
-# YOLO模型文件目录
+# 模型文件目录
 
-## 模型文件放置
+模型文件不提交到 Git。本目录用于放置本地训练权重和导出的 Windows runtime 模型。
 
-将训练好的YOLO模型文件放置在此目录下。
+## 当前文件约定
 
-### 推荐命名
-
-```
+```text
 weights/
-├── best.pt          # 最佳模型（推荐）
-├── last.pt          # 最后一个epoch的模型
-└── yolo11n.pt       # 预训练模型（可选）
+├── best.pt      # 源模型，来自 Ultralytics 训练结果
+└── best.onnx    # Windows runtime 使用的 ONNX 模型，由 npm run desktop:export-onnx 生成
 ```
 
-### 配置模型路径
+## 导出 ONNX
 
-在 `ai-processor/.env` 中配置：
+从 `frontend/` 运行：
+
+```powershell
+npm run desktop:export-onnx
+```
+
+导出要求：
+
+- `weights/best.pt` 必须存在。
+- 导出环境需要 `torch + ultralytics`。
+- 必须有可用 NVIDIA GPU，导出脚本会检查 `torch.cuda.is_available()`。
+
+导出参数由 `frontend/scripts/export-onnx-model.mjs` 固定，当前 ONNX 输入为 `[1,3,640,1024]`，输出为 `[1,10,13440]`。
+
+## 运行时使用
+
+Windows 正式分析链路只使用 `best.onnx`：
+
+- `var-video-analyzer.exe --self-check-onnx --model best.onnx`
+- `var-video-analyzer.exe --input ... --model best.onnx --output-detections ...`
+
+Python PT/ONNX fallback 已删除，运行时不再自动下载或加载预训练 YOLO 模型。
+
+## 训练
+
+如需训练自定义模型，参考 Ultralytics 文档：
 
 ```bash
-# 使用best.pt
-YOLO_MODEL_PATH=weights/best.pt
-
-# 或使用绝对路径
-YOLO_MODEL_PATH=/path/to/your/model.pt
+yolo train data=var_dataset.yaml model=yolo11n.pt epochs=100 imgsz=1024
 ```
 
-## 模型训练
-
-如需训练自定义模型，参考Ultralytics文档：
-
-```bash
-# 使用YOLOv11训练
-yolo train data=var_dataset.yaml model=yolo11n.pt epochs=100 imgsz=640
-```
-
-训练完成后，将 `runs/detect/train/weights/best.pt` 复制到此目录。
-
-## 模型要求
-
-- 格式：PyTorch (.pt)
-- 框架：Ultralytics YOLO
-- 类别：6类（熔池未到边、粘连物、锭冠、辉光、边弧、爬弧）
-- 输入尺寸：推荐640x640或更大
-
-## 预训练模型
-
-如果没有训练好的模型，首次运行时会自动下载YOLOv11预训练模型：
-
-- `yolo11n.pt` - Nano（最快）
-- `yolo11s.pt` - Small
-- `yolo11m.pt` - Medium
-- `yolo11l.pt` - Large
-- `yolo11x.pt` - XLarge（最准确）
+训练完成后，将 `runs/detect/train/weights/best.pt` 复制到本目录，再运行 `npm run desktop:export-onnx`。
 
 ## 注意事项
 
-⚠️ **不要将模型文件提交到Git仓库**
-
-模型文件通常很大（几MB到几百MB），已在 `.gitignore` 中排除。
-
-如需分享模型，请使用以下方式：
-- 云存储（Google Drive、百度网盘等）
-- 模型版本管理平台（HuggingFace、ModelScope等）
-- 内部文件服务器
+不要将 `best.pt` 或 `best.onnx` 提交到 Git。模型文件通常很大，已在 `.gitignore` 中排除。
